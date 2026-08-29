@@ -267,3 +267,6 @@ results/
 
 config.local.*
 settings.local.*
+
+# FUSE temporary files
+.fuse_hidden*
