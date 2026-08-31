@@ -270,3 +270,8 @@ settings.local.*
 
 # FUSE temporary files
 .fuse_hidden*
+
+backend/venv/
+__pycache__/
+*.pyc
+.env
