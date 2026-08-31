@@ -2,12 +2,13 @@ import { initializeApp } from "firebase/app";
 import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyARo8FLMjUQ10l4JN9b3pK3vP0UCme_K1U",
-  authDomain: "akasha-satquery.firebaseapp.com",
-  projectId: "akasha-satquery",
-  storageBucket: "akasha-satquery.firebasestorage.app",
-  messagingSenderId: "964695172038",
-  appId: "1:964695172038:web:c730bb66385441c89548c7",
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  
 };
 
 const app = initializeApp(firebaseConfig);
