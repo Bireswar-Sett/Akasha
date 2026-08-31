@@ -1,0 +1,272 @@
+# ============================================================
+# Akasha - Global Git Ignore
+# ============================================================
+
+
+# ------------------------------------------------------------
+# Python
+# ------------------------------------------------------------
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing / type checking
+.pytest_cache/
+.mypy_cache/
+.pyre/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+
+# ------------------------------------------------------------
+# Node / React
+# ------------------------------------------------------------
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build output
+frontend/dist/
+frontend/build/
+
+# Vite
+frontend/.vite/
+
+# Next.js (if ever used)
+.next/
+out/
+
+
+# ------------------------------------------------------------
+# Environment / Secrets
+# ------------------------------------------------------------
+
+.env
+.env.*
+!.env.example
+
+# Firebase / Google credentials
+serviceAccountKey.json
+firebase-service-account.json
+google-credentials.json
+*.pem
+*.key
+
+
+# ------------------------------------------------------------
+# Model Weights
+# ------------------------------------------------------------
+
+# PyTorch
+*.pt
+*.pth
+*.ckpt
+*.bin
+
+# Hugging Face / Transformers
+*.safetensors
+*.safetensors.index.json
+
+# TensorFlow
+*.h5
+*.hdf5
+*.pb
+
+# ONNX
+*.onnx
+*.onnx_data
+
+# Other model formats
+*.gguf
+*.ggml
+
+# LoRA / PEFT adapters
+adapter_model.*
+adapter_config.json
+
+# Model checkpoints / training output
+checkpoints/
+checkpoint-*/
+runs/
+wandb/
+mlruns/
+
+
+# ------------------------------------------------------------
+# Hugging Face / ML Caches
+# ------------------------------------------------------------
+
+.huggingface/
+hf_cache/
+transformers_cache/
+
+# General caches
+.cache/
+
+# Datasets downloaded locally
+datasets/
+data/
+data/raw/
+data/processed/
+
+# NOTE:
+# If we later have small datasets that MUST be versioned,
+# use ! rules for those specific files/directories.
+
+
+# ------------------------------------------------------------
+# Logs
+# ------------------------------------------------------------
+
+*.log
+logs/
+
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+
+# ------------------------------------------------------------
+# Docker
+# ------------------------------------------------------------
+
+.docker/
+docker-compose.override.yml
+
+
+# ------------------------------------------------------------
+# Firebase
+# ------------------------------------------------------------
+
+.firebase/
+firebase-debug.log
+firebase-debug.*.log
+firestore-debug.log
+firestore-debug.*.log
+ui-debug.log
+ui-debug.*.log
+
+
+# ------------------------------------------------------------
+# IDEs / Editors
+# ------------------------------------------------------------
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*~
+.DS_Store
+Thumbs.db
+
+
+# ------------------------------------------------------------
+# OS junk
+# ------------------------------------------------------------
+
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
+
+
+# ------------------------------------------------------------
+# Temporary files
+# ------------------------------------------------------------
+
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.orig
+
+
+# ------------------------------------------------------------
+# Local deployment files
+# ------------------------------------------------------------
+
+*.local
+*.secret
+secrets/
+local/
+tmp/
+temp/
+
+
+# ------------------------------------------------------------
+# Generated documentation / artifacts
+# ------------------------------------------------------------
+
+*.pdf
+*.zip
+*.tar
+*.tar.gz
+
+# Generated visualizations
+outputs/
+results/
+
+
+# ------------------------------------------------------------
+# Python environment files
+# ------------------------------------------------------------
+
+.python-version
+
+
+# ------------------------------------------------------------
+# OS / GPU / profiling output
+# ------------------------------------------------------------
+
+*.prof
+*.nsys-rep
+*.ncu-rep
+*.nvvp
+
+
+# ------------------------------------------------------------
+# Terraform (if we use it later)
+# ------------------------------------------------------------
+
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+
+# ------------------------------------------------------------
+# Local configuration
+# ------------------------------------------------------------
+
+config.local.*
+settings.local.*
+
+# FUSE temporary files
+.fuse_hidden*
