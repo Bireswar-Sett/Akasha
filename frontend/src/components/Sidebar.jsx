@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Plus, 
   MessageSquare, 
@@ -16,6 +16,8 @@ import {
 } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import logoSrc from '../assets/logo.png';
+import { db, isDemoMode } from '../firebaseClient';
+import { collection, query, orderBy, onSnapshot } from 'firebase/firestore';
 
 const Sidebar = ({ 
   sessions, 
@@ -30,7 +32,19 @@ const Sidebar = ({
   onLogout
 }) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [activeTab, setActiveTab] = useState('chats'); // 'chats' | 'imagery' | 'models'
+  const [activeTab, setActiveTab] = useState('chats'); // 'chats' | 'imagery'
+  const [userImagery, setUserImagery] = useState([]);
+
+  useEffect(() => {
+    if (!user || isDemoMode) return;
+    const imageryRef = collection(db, 'users', user.id, 'imagery');
+    const q = query(imageryRef, orderBy('uploadedAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      setUserImagery(items);
+    }, (err) => console.warn('Firestore imagery list warning:', err));
+    return () => unsubscribe();
+  }, [user]);
 
   const onDrop = (acceptedFiles) => {
     if (acceptedFiles && acceptedFiles.length > 0) {
@@ -138,8 +152,7 @@ const Sidebar = ({
         }}>
           {[
             { id: 'chats', label: 'History', icon: MessageSquare },
-            { id: 'imagery', label: 'Imagery', icon: UploadCloud },
-            { id: 'models', label: 'Models', icon: Cpu }
+            { id: 'imagery', label: 'Imagery', icon: UploadCloud }
           ].map(tab => {
             const Icon = tab.icon;
             const active = activeTab === tab.id;
@@ -279,7 +292,7 @@ const Sidebar = ({
             {activeTab === 'imagery' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 <span style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', padding: '4px 6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Imagery Manager ({selectedFiles.length})
+                  Imagery Manager ({selectedFiles.length + userImagery.length})
                 </span>
 
                 <div
@@ -304,15 +317,16 @@ const Sidebar = ({
                   </p>
                 </div>
 
+                {/* Staged files */}
                 {selectedFiles.map((file, idx) => (
                   <div key={idx} style={{
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
-                    background: 'rgba(255,255,255,0.04)',
+                    background: 'rgba(108, 99, 255, 0.12)',
                     padding: '8px 10px',
                     borderRadius: '8px',
-                    border: '1px solid var(--glass-border)',
+                    border: '1px solid rgba(108, 99, 255, 0.3)',
                     fontSize: '0.8rem'
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
@@ -329,43 +343,36 @@ const Sidebar = ({
                     </button>
                   </div>
                 ))}
-              </div>
-            )}
 
-            {activeTab === 'models' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <span style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', padding: '4px 6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Available Specialists
-                </span>
-
-                {[
-                  { name: 'GeoChat', desc: 'General VQA & Multi-Modal Question Answering' },
-                  { name: 'TEOChat', desc: 'Temporal & Time Series Satellite Analysis' },
-                  { name: 'SkySense', desc: 'Land cover classification & feature detection' },
-                  { name: 'M2CD', desc: 'Multi-temporal Change Detection' }
-                ].map((m, idx) => (
-                  <div key={idx} style={{
-                    padding: '10px',
-                    borderRadius: '10px',
-                    background: 'rgba(255,255,255,0.03)',
-                    border: '1px solid var(--glass-border)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '4px'
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--accent-secondary)' }}>
-                        {m.name}
-                      </span>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '0.7rem', color: '#4EFA7B' }}>
-                        <CheckCircle2 size={12} /> Active
-                      </span>
-                    </div>
-                    <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.3 }}>
-                      {m.desc}
-                    </p>
+                {/* Persisted Storage Imagery */}
+                {userImagery.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
+                      Stored Cloud Imagery
+                    </span>
+                    {userImagery.map(img => (
+                      <div key={img.id} style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        background: 'rgba(255,255,255,0.03)',
+                        padding: '6px 8px',
+                        borderRadius: '8px',
+                        border: '1px solid var(--glass-border)',
+                        fontSize: '0.78rem'
+                      }}>
+                        <img
+                          src={img.url}
+                          alt={img.name}
+                          style={{ width: '32px', height: '32px', borderRadius: '6px', objectFit: 'cover' }}
+                        />
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, color: 'var(--text-primary)' }}>
+                          {img.name}
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                )}
               </div>
             )}
           </>

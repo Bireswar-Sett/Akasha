@@ -5,7 +5,7 @@ const ModelStatus = () => {
   const models = [
     { name: 'GeoChat', status: 'Available', color: 'var(--accent-secondary)' },
     { name: 'TEOChat', status: 'Available', color: 'var(--accent-primary)' },
-    { name: 'SkySense', status: 'Available', color: '#4ade80' },
+    { name: 'GeoVision', status: 'Available', color: '#4ade80' },
     { name: 'M2CD', status: 'Available', color: '#f472b6' },
   ];
 

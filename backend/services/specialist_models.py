@@ -11,7 +11,7 @@ def execute_model(model_name: str, query: str, image_metadata: list) -> dict:
     responses = {
         "GeoChat": "Urban area detected with multiple residential buildings and road networks.",
         "TEOChat": "Significant changes observed over the time series, indicating urban expansion.",
-        "SkySense": "Features classified as 60% built-up area, 30% vegetation, 10% water bodies.",
+        "GeoVision": "Features classified as 60% built-up area, 30% vegetation, 10% water bodies.",
         "M2CD": "Detected new constructions in the northern quadrant of the imagery."
     }
     

@@ -12,7 +12,7 @@ def determine_specialist_model(query: str) -> str:
     elif any(keyword in query_lower for keyword in ["time", "temporal", "series", "progression"]):
         return "TEOChat"
     elif any(keyword in query_lower for keyword in ["classify", "detect", "feature", "type"]):
-        return "SkySense"
+        return "GeoVision"
     else:
         # Default to GeoChat for general VQA
         return "GeoChat"

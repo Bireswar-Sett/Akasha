@@ -14,12 +14,16 @@ import {
   Compass
 } from 'lucide-react';
 import axios from 'axios';
+import { storage, db, isDemoMode } from '../firebaseClient';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { collection, addDoc } from 'firebase/firestore';
 
 const ChatInterface = ({ 
   selectedFiles, 
   onFileSelect, 
   activeSession, 
-  onUpdateSessionMessages 
+  onUpdateSessionMessages,
+  user
 }) => {
   const [query, setQuery] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -37,16 +41,47 @@ const ChatInterface = ({
     const textToSend = overrideQuery || query;
     if (!textToSend.trim() || isProcessing) return;
 
+    // Upload attached images to Firebase Storage & Firestore imagery collection
+    let attachmentUrls = [];
+    if (selectedFiles && selectedFiles.length > 0) {
+      for (const file of selectedFiles) {
+        try {
+          let downloadUrl = '';
+          if (user && !isDemoMode) {
+            const storageRef = ref(storage, `users/${user.id}/imagery/${Date.now()}_${file.name}`);
+            const snapshot = await uploadBytes(storageRef, file);
+            downloadUrl = await getDownloadURL(snapshot.ref);
+
+            // Record in user's Imagery collection
+            await addDoc(collection(db, 'users', user.id, 'imagery'), {
+              name: file.name,
+              url: downloadUrl,
+              uploadedAt: Date.now(),
+              size: file.size
+            });
+          } else {
+            downloadUrl = URL.createObjectURL(file);
+          }
+          attachmentUrls.push({ name: file.name, url: downloadUrl });
+        } catch (uploadErr) {
+          console.warn('Firebase Storage upload warning:', uploadErr);
+          attachmentUrls.push({ name: file.name, url: URL.createObjectURL(file) });
+        }
+      }
+    }
+
     const userMessage = {
       id: Date.now().toString(),
       sender: 'user',
       text: textToSend,
-      attachments: [...selectedFiles],
+      attachments: attachmentUrls,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
     const updatedMessages = [...(activeSession?.messages || []), userMessage];
     onUpdateSessionMessages(updatedMessages);
+    const filesToUpload = [...selectedFiles];
+    onFileSelect([]); // clear selection
     setQuery('');
     setIsProcessing(true);
 
@@ -131,12 +166,7 @@ const ChatInterface = ({
             {activeSession?.title || 'New Satellite Intelligence Analysis'}
           </h2>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#4EFA7B' }}></span>
-            Orchestrator Ready
-          </span>
-        </div>
+        <div></div>
       </div>
 
       {/* Messages Feed */}
@@ -174,7 +204,7 @@ const ChatInterface = ({
             </div>
             <h3 style={{ fontSize: '1.6rem', fontWeight: 600 }}>What would you like to analyze?</h3>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.5 }}>
-              Upload satellite imagery and ask queries. AKASHA automatically routes your prompt to specialist models like GeoChat, TEOChat, SkySense, or M2CD.
+              Upload satellite imagery and ask queries. AKASHA automatically routes your prompt to specialist models like GeoChat, TEOChat, or M2CD.
             </p>
 
             <div style={{
@@ -249,21 +279,37 @@ const ChatInterface = ({
                   color: '#fff',
                   boxShadow: '0 4px 15px rgba(0,0,0,0.1)'
                 }}>
-                  {/* Attachments inside user message */}
+                  {/* Attachments inside user message with image preview */}
                   {msg.attachments && msg.attachments.length > 0 && (
-                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '8px' }}>
-                      {msg.attachments.map((file, i) => (
-                        <span key={i} style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          background: 'rgba(0,0,0,0.2)',
-                          padding: '4px 8px',
-                          borderRadius: '6px',
-                          fontSize: '0.75rem'
-                        }}>
-                          <ImageIcon size={12} /> {file.name}
-                        </span>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
+                      {msg.attachments.map((att, i) => (
+                        <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          {att.url ? (
+                            <img
+                              src={att.url}
+                              alt={att.name || 'Satellite Attachment'}
+                              style={{
+                                maxWidth: '220px',
+                                maxHeight: '160px',
+                                borderRadius: '10px',
+                                objectFit: 'cover',
+                                border: '1px solid rgba(255,255,255,0.2)'
+                              }}
+                            />
+                          ) : (
+                            <span style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              background: 'rgba(0,0,0,0.2)',
+                              padding: '4px 8px',
+                              borderRadius: '6px',
+                              fontSize: '0.75rem'
+                            }}>
+                              <ImageIcon size={12} /> {att.name || att}
+                            </span>
+                          )}
+                        </div>
                       ))}
                     </div>
                   )}
