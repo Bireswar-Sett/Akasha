@@ -23,7 +23,60 @@ function App() {
   /* ── Chat sessions state ── */
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
-  const [selectedFiles, setSelectedFiles] = useState([]);
+
+  /* ── Per-session draft cache: { [sessionId]: { query: '', files: [] } } ── */
+  // Restore query drafts from localStorage on mount (files can't be restored across refresh)
+  const [drafts, setDrafts] = useState(() => {
+    try {
+      const saved = localStorage.getItem('akasha_drafts');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Restore only query strings; files can't survive a page refresh
+        const restored = {};
+        Object.entries(parsed).forEach(([sid, d]) => {
+          restored[sid] = { query: d.query || '', files: [] };
+        });
+        return restored;
+      }
+    } catch (_) {}
+    return {};
+  });
+
+  /* Get / set the draft for the current active session */
+  const currentDraft = drafts[activeSessionId] || { query: '', files: [] };
+  const selectedFiles = currentDraft.files;
+
+  const setSelectedFiles = (files) => {
+    setDrafts(prev => ({
+      ...prev,
+      [activeSessionId]: { ...(prev[activeSessionId] || { query: '', files: [] }), files }
+    }));
+  };
+
+  const setDraftQuery = (q) => {
+    setDrafts(prev => ({
+      ...prev,
+      [activeSessionId]: { ...(prev[activeSessionId] || { query: '', files: [] }), query: q }
+    }));
+  };
+
+  const clearDraft = () => {
+    setDrafts(prev => ({
+      ...prev,
+      [activeSessionId]: { query: '', files: [] }
+    }));
+  };
+
+  /* Persist draft queries (not files) to localStorage on every change */
+  useEffect(() => {
+    try {
+      const toSave = {};
+      Object.entries(drafts).forEach(([sid, d]) => {
+        if (d.query) toSave[sid] = { query: d.query };
+      });
+      localStorage.setItem('akasha_drafts', JSON.stringify(toSave));
+    } catch (_) {}
+  }, [drafts]);
 
   /* Listen for Firebase Auth state changes */
   useEffect(() => {
@@ -249,6 +302,9 @@ function App() {
         activeSession={activeSession}
         onUpdateSessionMessages={handleUpdateSessionMessages}
         user={user}
+        draftQuery={currentDraft.query}
+        onDraftQueryChange={setDraftQuery}
+        onClearDraft={clearDraft}
       />
     </div>
   );

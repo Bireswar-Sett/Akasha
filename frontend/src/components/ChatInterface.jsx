@@ -23,9 +23,13 @@ const ChatInterface = ({
   onFileSelect, 
   activeSession, 
   onUpdateSessionMessages,
-  user
+  user,
+  draftQuery,
+  onDraftQueryChange,
+  onClearDraft
 }) => {
-  const [query, setQuery] = useState('');
+  const query = draftQuery || '';
+  const setQuery = onDraftQueryChange;
   const [isProcessing, setIsProcessing] = useState(false);
   const [previewImage, setPreviewImage] = useState(null);
   const messagesEndRef = useRef(null);
@@ -41,22 +45,37 @@ const ChatInterface = ({
   const handleSend = async (overrideQuery = null) => {
     let textToSend = overrideQuery || query;
     if ((!textToSend || !textToSend.trim()) && selectedFiles && selectedFiles.length > 0) {
-      textToSend = "Analyze attached satellite imagery.";
+      textToSend = 'Analyze attached satellite imagery.';
     }
     if (!textToSend || !textToSend.trim() || isProcessing) return;
 
-    // Upload attached images to Firebase Storage & Firestore imagery collection
+    // Snapshot files BEFORE clearing draft
+    const filesToUpload = selectedFiles ? [...selectedFiles] : [];
+    if (onClearDraft) onClearDraft();
+    setIsProcessing(true);
+
+    // ── Step 1: Show user message immediately ──────────────────────────────
+    const userMessage = {
+      id: Date.now().toString(),
+      sender: 'user',
+      text: textToSend,
+      attachments: [],          // will be filled after upload
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+    const messagesWithUser = [...(activeSession?.messages || []), userMessage];
+    onUpdateSessionMessages(messagesWithUser);
+
+    // ── Step 2: Upload images to Firebase Storage ──────────────────────────
     let attachmentUrls = [];
-    if (selectedFiles && selectedFiles.length > 0) {
-      for (const file of selectedFiles) {
+    if (filesToUpload.length > 0) {
+      for (const file of filesToUpload) {
         try {
           let downloadUrl = '';
           if (user && !isDemoMode) {
             const storageRef = ref(storage, `users/${user.id}/imagery/${Date.now()}_${file.name}`);
             const snapshot = await uploadBytes(storageRef, file);
             downloadUrl = await getDownloadURL(snapshot.ref);
-
-            // Record in user's Imagery collection
+            // Record in global user imagery collection
             await addDoc(collection(db, 'users', user.id, 'imagery'), {
               name: file.name,
               url: downloadUrl,
@@ -68,48 +87,39 @@ const ChatInterface = ({
           }
           attachmentUrls.push({ name: file.name, url: downloadUrl });
         } catch (uploadErr) {
-          console.warn('Firebase Storage upload warning:', uploadErr);
+          console.error('Storage upload error:', uploadErr);
+          // Fall back to a local blob URL so the image still shows in chat
           attachmentUrls.push({ name: file.name, url: URL.createObjectURL(file) });
         }
       }
     }
 
-    const userMessage = {
-      id: Date.now().toString(),
-      sender: 'user',
-      text: textToSend,
-      attachments: attachmentUrls,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    };
-
-    const updatedMessages = [...(activeSession?.messages || []), userMessage];
+    // Update the user message now with real attachment URLs
+    const userMessageWithAttachments = { ...userMessage, attachments: attachmentUrls };
+    const updatedMessages = messagesWithUser.map(m =>
+      m.id === userMessage.id ? userMessageWithAttachments : m
+    );
     onUpdateSessionMessages(updatedMessages);
-    const filesToUpload = [...selectedFiles];
-    onFileSelect([]); // clear selection
-    setQuery('');
-    setIsProcessing(true);
 
     try {
       // 1. Orchestration
       const orchestrateData = new FormData();
       orchestrateData.append('query', textToSend);
-      if (filesToUpload && filesToUpload.length > 0) {
-        filesToUpload.forEach(file => orchestrateData.append('images', file));
-      }
+      filesToUpload.forEach(file => orchestrateData.append('images', file));
 
-      const orchestrateResponse = await axios.post('http://127.0.0.1:8000/api/orchestrate', orchestrateData);
-      const selectedModel = orchestrateResponse.data.selected_model;
-      const confidence = orchestrateResponse.data.confidence;
+      const API_BASE = '/api';
+      const orchestrateResponse = await axios.post(`${API_BASE}/orchestrate`, orchestrateData, { timeout: 10000 });
+      const orchData = orchestrateResponse.data;
+      const selectedModel = orchData.selected_model;
+      const confidence = orchData.confidence;
 
       // 2. Execution
       const executeData = new FormData();
       executeData.append('model_name', selectedModel);
       executeData.append('query', textToSend);
-      if (filesToUpload && filesToUpload.length > 0) {
-        filesToUpload.forEach(file => executeData.append('images', file));
-      }
+      filesToUpload.forEach(file => executeData.append('images', file));
 
-      const executeResponse = await axios.post('http://127.0.0.1:8000/api/execute', executeData);
+      const executeResponse = await axios.post(`${API_BASE}/execute`, executeData, { timeout: 10000 });
 
       const botMessage = {
         id: (Date.now() + 1).toString(),
@@ -120,19 +130,21 @@ const ChatInterface = ({
         visualEvidence: executeResponse.data.visual_evidence_url,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
-
       onUpdateSessionMessages([...updatedMessages, botMessage]);
 
     } catch (error) {
-      console.error('Error processing satellite request:', error);
-      const errorMessage = {
+      console.error('Backend error:', error?.response?.status, error?.message);
+      const isOffline = !error?.response;
+      const botError = {
         id: (Date.now() + 1).toString(),
         sender: 'assistant',
         isError: true,
-        text: "Could not complete analysis. Please ensure the Python backend API (port 8000) is active.",
+        text: isOffline
+          ? '⚠️ Backend offline. Your image was saved to Cloud Storage. Start the Python backend (port 8000) to run AI analysis.'
+          : `⚠️ Analysis failed (${error?.response?.status || 'error'}). Please try again.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
-      onUpdateSessionMessages([...updatedMessages, errorMessage]);
+      onUpdateSessionMessages([...updatedMessages, botError]);
     } finally {
       setIsProcessing(false);
     }
@@ -477,12 +489,12 @@ const ChatInterface = ({
           <button
             className="glass-button"
             onClick={() => handleSend()}
-            disabled={(!query.trim() && (!selectedFiles || selectedFiles.length === 0)) || isProcessing}
             style={{ 
               padding: '12px 20px', 
               borderRadius: '12px',
-              opacity: ((!query.trim() && (!selectedFiles || selectedFiles.length === 0)) || isProcessing) ? 0.5 : 1,
-              cursor: ((!query.trim() && (!selectedFiles || selectedFiles.length === 0)) || isProcessing) ? 'not-allowed' : 'pointer'
+              opacity: ((!query.trim() && (!selectedFiles || selectedFiles.length === 0)) || isProcessing) ? 0.4 : 1,
+              cursor: isProcessing ? 'not-allowed' : 'pointer',
+              pointerEvents: isProcessing ? 'none' : 'auto'
             }}
           >
             {isProcessing ? <div className="spinner" /> : <Send size={18} />}

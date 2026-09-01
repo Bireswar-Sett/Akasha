@@ -292,7 +292,7 @@ const Sidebar = ({
             {activeTab === 'imagery' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 <span style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', padding: '4px 6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                  Imagery Manager ({selectedFiles.length + userImagery.length})
+                  Cloud Imagery ({userImagery.length})
                 </span>
 
                 <div
@@ -310,42 +310,19 @@ const Sidebar = ({
                   <input {...getInputProps()} />
                   <UploadCloud size={24} color="var(--accent-primary)" style={{ margin: '0 auto 6px' }} />
                   <p style={{ fontSize: '0.8rem', color: '#fff', fontWeight: 500 }}>
-                    {isDragActive ? "Drop satellite imagery here" : "Upload Imagery"}
+                    {isDragActive ? 'Drop satellite imagery here' : 'Attach to Current Analysis'}
                   </p>
                   <p style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
                     GeoTIFF, TIFF, PNG, JPEG
                   </p>
                 </div>
 
-                {/* Staged files */}
-                {selectedFiles.map((file, idx) => (
-                  <div key={idx} style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    background: 'rgba(108, 99, 255, 0.12)',
-                    padding: '8px 10px',
-                    borderRadius: '8px',
-                    border: '1px solid rgba(108, 99, 255, 0.3)',
-                    fontSize: '0.8rem'
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
-                      <ImageIcon size={16} color="var(--accent-secondary)" />
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '140px' }}>
-                        {file.name}
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => onFileSelect(selectedFiles.filter((_, i) => i !== idx))}
-                      style={{ background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                ))}
-
-                {/* Persisted Storage Imagery */}
-                {userImagery.length > 0 && (
+                {/* Stored Cloud Imagery — all user images across all sessions */}
+                {userImagery.length === 0 ? (
+                  <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', padding: '12px 8px', textAlign: 'center' }}>
+                    No imagery uploaded yet. Send an image in chat and it will appear here.
+                  </p>
+                ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
                     <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
                       Stored Cloud Imagery
