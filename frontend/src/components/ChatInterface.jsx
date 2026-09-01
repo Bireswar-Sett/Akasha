@@ -27,6 +27,7 @@ const ChatInterface = ({
 }) => {
   const [query, setQuery] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [previewImage, setPreviewImage] = useState(null);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -288,13 +289,19 @@ const ChatInterface = ({
                             <img
                               src={att.url}
                               alt={att.name || 'Satellite Attachment'}
+                              onClick={() => setPreviewImage({ url: att.url, name: att.name })}
+                              title="Click to view full size"
                               style={{
                                 maxWidth: '220px',
                                 maxHeight: '160px',
                                 borderRadius: '10px',
                                 objectFit: 'cover',
-                                border: '1px solid rgba(255,255,255,0.2)'
+                                border: '1px solid rgba(255,255,255,0.2)',
+                                cursor: 'pointer',
+                                transition: 'all 0.2s ease'
                               }}
+                              onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.03)'}
+                              onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
                             />
                           ) : (
                             <span style={{
@@ -470,6 +477,80 @@ const ChatInterface = ({
           </button>
         </div>
       </div>
+      {/* Full-screen Lightbox Modal */}
+      {previewImage && (
+        <div 
+          onClick={() => setPreviewImage(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1000,
+            background: 'rgba(0, 0, 0, 0.85)',
+            backdropFilter: 'blur(16px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '2rem',
+            animation: 'fadeIn 0.25s ease-out'
+          }}
+        >
+          <div 
+            onClick={e => e.stopPropagation()}
+            style={{
+              position: 'relative',
+              maxWidth: '90vw',
+              maxHeight: '90vh',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              background: 'rgba(12, 12, 35, 0.9)',
+              border: '1px solid var(--glass-border)',
+              borderRadius: '20px',
+              padding: '1.5rem',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.8)'
+            }}
+          >
+            <div style={{
+              display: 'flex',
+              width: '100%',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '1rem',
+              gap: '12px'
+            }}>
+              <h4 style={{ color: '#fff', fontSize: '1rem', fontWeight: 600 }}>{previewImage.name || 'Satellite Image Inspection'}</h4>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <a
+                  href={previewImage.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="glass-button"
+                  style={{ fontSize: '0.78rem', padding: '6px 12px' }}
+                >
+                  Open Original
+                </a>
+                <button
+                  onClick={() => setPreviewImage(null)}
+                  style={{ background: 'rgba(255,255,255,0.08)', border: 'none', color: '#fff', cursor: 'pointer', borderRadius: '8px', padding: '6px', display: 'flex' }}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+            <img
+              src={previewImage.url}
+              alt={previewImage.name || 'Full preview'}
+              style={{
+                maxWidth: '100%',
+                maxHeight: '75vh',
+                borderRadius: '12px',
+                objectFit: 'contain',
+                boxShadow: '0 8px 32px rgba(0,0,0,0.5)'
+              }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

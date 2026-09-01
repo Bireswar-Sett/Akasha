@@ -351,16 +351,28 @@ const Sidebar = ({
                       Stored Cloud Imagery
                     </span>
                     {userImagery.map(img => (
-                      <div key={img.id} style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        background: 'rgba(255,255,255,0.03)',
-                        padding: '6px 8px',
-                        borderRadius: '8px',
-                        border: '1px solid var(--glass-border)',
-                        fontSize: '0.78rem'
-                      }}>
+                      <a
+                        key={img.id}
+                        href={img.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="Click to view full image in new tab"
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          background: 'rgba(255,255,255,0.03)',
+                          padding: '6px 8px',
+                          borderRadius: '8px',
+                          border: '1px solid var(--glass-border)',
+                          fontSize: '0.78rem',
+                          textDecoration: 'none',
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease'
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.08)'}
+                        onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.03)'}
+                      >
                         <img
                           src={img.url}
                           alt={img.name}
@@ -369,7 +381,7 @@ const Sidebar = ({
                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, color: 'var(--text-primary)' }}>
                           {img.name}
                         </span>
-                      </div>
+                      </a>
                     ))}
                   </div>
                 )}
