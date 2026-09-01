@@ -39,8 +39,11 @@ const ChatInterface = ({
   }, [activeSession?.messages, isProcessing]);
 
   const handleSend = async (overrideQuery = null) => {
-    const textToSend = overrideQuery || query;
-    if (!textToSend.trim() || isProcessing) return;
+    let textToSend = overrideQuery || query;
+    if ((!textToSend || !textToSend.trim()) && selectedFiles && selectedFiles.length > 0) {
+      textToSend = "Analyze attached satellite imagery.";
+    }
+    if (!textToSend || !textToSend.trim() || isProcessing) return;
 
     // Upload attached images to Firebase Storage & Firestore imagery collection
     let attachmentUrls = [];
