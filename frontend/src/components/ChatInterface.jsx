@@ -477,8 +477,13 @@ const ChatInterface = ({
           <button
             className="glass-button"
             onClick={() => handleSend()}
-            disabled={!query.trim() || isProcessing}
-            style={{ padding: '12px 20px', borderRadius: '12px' }}
+            disabled={(!query.trim() && (!selectedFiles || selectedFiles.length === 0)) || isProcessing}
+            style={{ 
+              padding: '12px 20px', 
+              borderRadius: '12px',
+              opacity: ((!query.trim() && (!selectedFiles || selectedFiles.length === 0)) || isProcessing) ? 0.5 : 1,
+              cursor: ((!query.trim() && (!selectedFiles || selectedFiles.length === 0)) || isProcessing) ? 'not-allowed' : 'pointer'
+            }}
           >
             {isProcessing ? <div className="spinner" /> : <Send size={18} />}
             <span>Analyze</span>
