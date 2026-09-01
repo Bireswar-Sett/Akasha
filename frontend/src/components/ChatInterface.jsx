@@ -90,8 +90,8 @@ const ChatInterface = ({
       // 1. Orchestration
       const orchestrateData = new FormData();
       orchestrateData.append('query', textToSend);
-      if (selectedFiles && selectedFiles.length > 0) {
-        selectedFiles.forEach(file => orchestrateData.append('images', file));
+      if (filesToUpload && filesToUpload.length > 0) {
+        filesToUpload.forEach(file => orchestrateData.append('images', file));
       }
 
       const orchestrateResponse = await axios.post('http://127.0.0.1:8000/api/orchestrate', orchestrateData);
@@ -102,8 +102,8 @@ const ChatInterface = ({
       const executeData = new FormData();
       executeData.append('model_name', selectedModel);
       executeData.append('query', textToSend);
-      if (selectedFiles && selectedFiles.length > 0) {
-        selectedFiles.forEach(file => executeData.append('images', file));
+      if (filesToUpload && filesToUpload.length > 0) {
+        filesToUpload.forEach(file => executeData.append('images', file));
       }
 
       const executeResponse = await axios.post('http://127.0.0.1:8000/api/execute', executeData);
@@ -283,41 +283,46 @@ const ChatInterface = ({
                   {/* Attachments inside user message with image preview */}
                   {msg.attachments && msg.attachments.length > 0 && (
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
-                      {msg.attachments.map((att, i) => (
-                        <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                          {att.url ? (
-                            <img
-                              src={att.url}
-                              alt={att.name || 'Satellite Attachment'}
-                              onClick={() => setPreviewImage({ url: att.url, name: att.name })}
-                              title="Click to view full size"
-                              style={{
-                                maxWidth: '220px',
-                                maxHeight: '160px',
-                                borderRadius: '10px',
-                                objectFit: 'cover',
-                                border: '1px solid rgba(255,255,255,0.2)',
-                                cursor: 'pointer',
-                                transition: 'all 0.2s ease'
-                              }}
-                              onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.03)'}
-                              onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
-                            />
-                          ) : (
-                            <span style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '4px',
-                              background: 'rgba(0,0,0,0.2)',
-                              padding: '4px 8px',
-                              borderRadius: '6px',
-                              fontSize: '0.75rem'
-                            }}>
-                              <ImageIcon size={12} /> {att.name || att}
-                            </span>
-                          )}
-                        </div>
-                      ))}
+                      {msg.attachments.map((att, i) => {
+                        const imgUrl = typeof att === 'string' ? att : (att?.url || att?.preview);
+                        const imgName = typeof att === 'string' ? 'Satellite Image' : (att?.name || 'Satellite Image');
+                        return (
+                          <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            {imgUrl ? (
+                              <img
+                                src={imgUrl}
+                                alt={imgName}
+                                onClick={() => setPreviewImage({ url: imgUrl, name: imgName })}
+                                title="Click to view full size"
+                                style={{
+                                  maxWidth: '240px',
+                                  maxHeight: '170px',
+                                  borderRadius: '10px',
+                                  objectFit: 'cover',
+                                  border: '1px solid rgba(255,255,255,0.25)',
+                                  cursor: 'pointer',
+                                  transition: 'transform 0.2s ease',
+                                  boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+                                }}
+                                onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.04)'}
+                                onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
+                              />
+                            ) : (
+                              <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                background: 'rgba(0,0,0,0.25)',
+                                padding: '4px 8px',
+                                borderRadius: '6px',
+                                fontSize: '0.75rem'
+                              }}>
+                                <ImageIcon size={12} /> {imgName}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
 

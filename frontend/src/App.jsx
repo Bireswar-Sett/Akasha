@@ -177,9 +177,12 @@ function App() {
       updatedAt: Date.now()
     };
 
+    // Sanitize object to remove non-serializable fields (like File objects or undefined) before Firestore setDoc
+    const cleanSession = JSON.parse(JSON.stringify(updatedSession));
+
     if (user && !isDemoMode) {
       try {
-        await setDoc(doc(db, 'users', user.id, 'sessions', activeSessionId), updatedSession, { merge: true });
+        await setDoc(doc(db, 'users', user.id, 'sessions', activeSessionId), cleanSession, { merge: true });
       } catch (err) {
         console.error('Error persisting messages to Firestore:', err);
       }
