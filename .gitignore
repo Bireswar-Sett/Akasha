@@ -10,10 +10,12 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
 *.so
 
 # Virtual environments
 .venv/
+backend/venv/
 venv/
 env/
 ENV/
@@ -36,36 +38,41 @@ htmlcov/
 # Jupyter
 .ipynb_checkpoints/
 
+# Python version configuration
+.python-version
+
 
 # ------------------------------------------------------------
-# Node / React
+# Node / React / Frontend
 # ------------------------------------------------------------
 
 node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-# Build output
+dist/
+dist-ssr/
 frontend/dist/
 frontend/build/
 
 # Vite
 frontend/.vite/
 
-# Next.js (if ever used)
+# Next.js
 .next/
 out/
 
 
 # ------------------------------------------------------------
-# Environment / Secrets
+# Environment / Secrets / Local Configuration
 # ------------------------------------------------------------
 
 .env
 .env.*
 !.env.example
+*.local
+*.secret
+secrets/
+local/
+config.local.*
+settings.local.*
 
 # Firebase / Google credentials
 serviceAccountKey.json
@@ -76,7 +83,7 @@ google-credentials.json
 
 
 # ------------------------------------------------------------
-# Model Weights
+# Model Weights & Machine Learning Artifacts
 # ------------------------------------------------------------
 
 # PyTorch
@@ -115,14 +122,12 @@ mlruns/
 
 
 # ------------------------------------------------------------
-# Hugging Face / ML Caches
+# Caches & Datasets
 # ------------------------------------------------------------
 
 .huggingface/
 hf_cache/
 transformers_cache/
-
-# General caches
 .cache/
 
 # Datasets downloaded locally
@@ -140,20 +145,26 @@ data/processed/
 # Logs
 # ------------------------------------------------------------
 
-*.log
 logs/
-
+*.log
 npm-debug.log*
 yarn-debug.log*
+yarn-error.log*
 pnpm-debug.log*
+lerna-debug.log*
 
 
 # ------------------------------------------------------------
-# Docker
+# Docker & Terraform
 # ------------------------------------------------------------
 
 .docker/
 docker-compose.override.yml
+
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
 
 
 # ------------------------------------------------------------
@@ -170,23 +181,23 @@ ui-debug.*.log
 
 
 # ------------------------------------------------------------
-# IDEs / Editors
+# IDEs / Editors / OS Junk
 # ------------------------------------------------------------
 
-.vscode/
+.vscode/*
+!.vscode/extensions.json
 .idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 *.swp
 *.swo
 *.swn
 *~
-.DS_Store
-Thumbs.db
 
-
-# ------------------------------------------------------------
 # OS junk
-# ------------------------------------------------------------
-
 .DS_Store
 .DS_Store?
 ._*
@@ -194,12 +205,15 @@ Thumbs.db
 .Trashes
 ehthumbs.db
 Desktop.ini
+.fuse_hidden*
 
 
 # ------------------------------------------------------------
-# Temporary files
+# Temporary Files & Artifacts
 # ------------------------------------------------------------
 
+tmp/
+temp/
 *.tmp
 *.temp
 *.bak
@@ -207,23 +221,7 @@ Desktop.ini
 *.old
 *.orig
 
-
-# ------------------------------------------------------------
-# Local deployment files
-# ------------------------------------------------------------
-
-*.local
-*.secret
-secrets/
-local/
-tmp/
-temp/
-
-
-# ------------------------------------------------------------
 # Generated documentation / artifacts
-# ------------------------------------------------------------
-
 *.pdf
 *.zip
 *.tar
@@ -235,43 +233,10 @@ results/
 
 
 # ------------------------------------------------------------
-# Python environment files
-# ------------------------------------------------------------
-
-.python-version
-
-
-# ------------------------------------------------------------
-# OS / GPU / profiling output
+# OS / GPU / Profiling Output
 # ------------------------------------------------------------
 
 *.prof
 *.nsys-rep
 *.ncu-rep
 *.nvvp
-
-
-# ------------------------------------------------------------
-# Terraform (if we use it later)
-# ------------------------------------------------------------
-
-.terraform/
-*.tfstate
-*.tfstate.*
-.terraform.lock.hcl
-
-
-# ------------------------------------------------------------
-# Local configuration
-# ------------------------------------------------------------
-
-config.local.*
-settings.local.*
-
-# FUSE temporary files
-.fuse_hidden*
-
-backend/venv/
-__pycache__/
-*.pyc
-.env
