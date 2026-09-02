@@ -15,22 +15,6 @@ class QwenController:
 
     Qwen decides which specialist tool to use.
     ToolExecutor handles communication with the hosted specialist.
-
-        User
-          ↓
-        Qwen
-          ↓
-        Tool call
-          ↓
-        ToolExecutor
-          ↓
-        Specialist Space
-          ↓
-        Tool result
-          ↓
-        Qwen
-          ↓
-        Final answer
     """
 
     def __init__(
@@ -41,9 +25,7 @@ class QwenController:
     ) -> None:
 
         if max_steps < 1:
-            raise ValueError(
-                "max_steps must be >= 1."
-            )
+            raise ValueError("max_steps must be >= 1.")
 
         self.qwen = qwen
         self.executor = executor
@@ -93,21 +75,12 @@ class QwenController:
 
         prepared = dict(arguments)
 
-        # --------------------------------------------------------------
-        # The backend may provide the image separately from the user's
-        # natural-language message.
-        #
-        # This avoids relying on Qwen to reproduce a long signed URL
-        # perfectly.
-        # --------------------------------------------------------------
-
         if (
             tool_name == "geochat"
             and "image_url" not in prepared
+            and image_url
         ):
-
-            if image_url:
-                prepared["image_url"] = image_url
+            prepared["image_url"] = image_url
 
         return prepared
 
@@ -122,10 +95,7 @@ class QwenController:
         max_new_tokens: int = 256,
     ) -> str:
 
-        if not isinstance(
-            user_message,
-            str,
-        ):
+        if not isinstance(user_message, str):
             raise TypeError(
                 "user_message must be a string."
             )
@@ -139,10 +109,7 @@ class QwenController:
 
         if image_url is not None:
 
-            if not isinstance(
-                image_url,
-                str,
-            ):
+            if not isinstance(image_url, str):
                 raise TypeError(
                     "image_url must be a string."
                 )
@@ -167,30 +134,13 @@ class QwenController:
             },
         ]
 
-        # --------------------------------------------------------------
-        # Make image availability explicit to Qwen.
-        #
-        # The actual URL is also injected directly into the tool call
-        # if Qwen omits it.
-        # --------------------------------------------------------------
-
-        if image_url:
-
-            messages[-1]["content"] = (
-                f"{user_message}\n\n"
-                "[Available image input]\n"
-                f"{image_url}"
-            )
-
         tools = self._get_tools()
 
         # --------------------------------------------------------------
         # Agent loop
         # --------------------------------------------------------------
 
-        for step in range(
-            self.max_steps
-        ):
+        for step in range(self.max_steps):
 
             print(
                 f"[QwenController] Step "
@@ -202,12 +152,10 @@ class QwenController:
                 tools=tools,
             )
 
-            response_type = response.get(
-                "type"
-            )
+            response_type = response.get("type")
 
             # ----------------------------------------------------------
-            # Final text
+            # Qwen decided it can answer directly
             # ----------------------------------------------------------
 
             if response_type == "text":
@@ -217,19 +165,22 @@ class QwenController:
                     "",
                 )
 
-                if not isinstance(
-                    final_text,
-                    str,
-                ):
-
+                if not isinstance(final_text, str):
                     raise RuntimeError(
                         "Qwen returned invalid final text."
                     )
 
-                return final_text.strip()
+                final_text = final_text.strip()
+
+                if not final_text:
+                    raise RuntimeError(
+                        "Qwen returned an empty final response."
+                    )
+
+                return final_text
 
             # ----------------------------------------------------------
-            # Tool calls
+            # Qwen requested specialist tool(s)
             # ----------------------------------------------------------
 
             if response_type != "tool_calls":
@@ -244,23 +195,19 @@ class QwenController:
                 [],
             )
 
-            if not isinstance(
-                tool_calls,
-                list,
-            ) or not tool_calls:
-
+            if (
+                not isinstance(tool_calls, list)
+                or not tool_calls
+            ):
                 raise RuntimeError(
                     "Qwen returned an empty tool call list."
                 )
 
             # ----------------------------------------------------------
-            # Preserve Qwen's tool-call output in conversation.
+            # Preserve the assistant tool-call response
             # ----------------------------------------------------------
 
-            raw_output = response.get(
-                "raw",
-                "",
-            )
+            raw_output = response.get("raw", "")
 
             messages.append(
                 {
@@ -270,32 +217,22 @@ class QwenController:
             )
 
             # ----------------------------------------------------------
-            # Execute every requested tool.
+            # Execute requested tools
             # ----------------------------------------------------------
 
             for call in tool_calls:
 
-                tool_name = call.get(
-                    "name"
-                )
+                tool_name = call.get("name")
+
+                if not isinstance(tool_name, str):
+                    continue
 
                 arguments = call.get(
                     "arguments",
                     {},
                 )
 
-                if not isinstance(
-                    tool_name,
-                    str,
-                ):
-
-                    continue
-
-                if not isinstance(
-                    arguments,
-                    dict,
-                ):
-
+                if not isinstance(arguments, dict):
                     arguments = {}
 
                 arguments = self._prepare_tool_arguments(
