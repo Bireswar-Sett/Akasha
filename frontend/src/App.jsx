@@ -100,24 +100,55 @@ function App() {
 
   /* Listen for Firebase Auth state changes */
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      if (firebaseUser) {
-        setUser({
-          id: firebaseUser.uid,
-          email: firebaseUser.email,
-          name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Astronaut',
-          avatar: firebaseUser.photoURL || null,
-          provider: firebaseUser.providerData[0]?.providerId || 'email',
-        });
-      } else {
-        setUser(null);
-        setSessions([]);
-        setActiveSessionId(null);
-      }
+    if (isDemoMode) {
       setAuthLoading(false);
-    });
+      return;
+    }
 
-    return () => unsubscribe();
+    let isMounted = true;
+    const timeoutId = setTimeout(() => {
+      if (isMounted) setAuthLoading(false);
+    }, 1500);
+
+    let unsubscribe = () => {};
+    try {
+      unsubscribe = onAuthStateChanged(
+        auth,
+        (firebaseUser) => {
+          clearTimeout(timeoutId);
+          if (!isMounted) return;
+          if (firebaseUser) {
+            setUser({
+              id: firebaseUser.uid,
+              email: firebaseUser.email,
+              name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Astronaut',
+              avatar: firebaseUser.photoURL || null,
+              provider: firebaseUser.providerData[0]?.providerId || 'email',
+            });
+          } else {
+            setUser(null);
+            setSessions([]);
+            setActiveSessionId(null);
+          }
+          setAuthLoading(false);
+        },
+        (err) => {
+          console.warn('Firebase auth listener error:', err);
+          clearTimeout(timeoutId);
+          if (isMounted) setAuthLoading(false);
+        }
+      );
+    } catch (err) {
+      console.warn('Failed to subscribe to auth state:', err);
+      clearTimeout(timeoutId);
+      setAuthLoading(false);
+    }
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timeoutId);
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
   }, []);
 
   /* Sync Chat Sessions from/to Firestore when user logs in */
