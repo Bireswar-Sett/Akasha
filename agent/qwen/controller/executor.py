@@ -5,7 +5,7 @@ from typing import Any
 
 from gradio_client import Client, handle_file
 
-from agent.qwen.controller.services import (
+from qwen.controller.services import (
     GEOCHAT_SPACE,
     HF_TOKEN,
 )
