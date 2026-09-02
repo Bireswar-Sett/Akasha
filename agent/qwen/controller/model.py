@@ -507,54 +507,69 @@ class QwenEngine:
         text: str,
     ) -> list[dict[str, Any]]:
         """
-        Parse common Qwen tool-call representations.
+        Parse Qwen tool-call output.
 
-        This parser intentionally supports the JSON-style formats
-        commonly encountered in Qwen tool calling while refusing to
-        execute arbitrary text as code.
+        Supported format:
+
+            <tool_call>
+            {"name": "geochat", "arguments": {...}}
+            </tool_call>
+
+        Also supports:
+            - raw JSON objects
+            - raw JSON arrays
+            - fenced JSON blocks
         """
+
+        import re
 
         candidates: list[str] = []
 
-        # --------------------------------------------------------------
-        # JSON object as entire response.
-        # --------------------------------------------------------------
-
         stripped = text.strip()
 
-        if stripped.startswith(
-            "{"
-        ) and stripped.endswith(
-            "}"
+        # ==============================================================
+        # Qwen XML-style tool calls
+        # ==============================================================
+
+        matches = re.findall(
+            r"<tool_call>\s*(.*?)\s*</tool_call>",
+            text,
+            flags=re.DOTALL,
+        )
+
+        for match in matches:
+            candidate = match.strip()
+
+            if candidate:
+                candidates.append(candidate)
+
+        # ==============================================================
+        # Entire response is a JSON object
+        # ==============================================================
+
+        if (
+            stripped.startswith("{")
+            and stripped.endswith("}")
         ):
-            candidates.append(
-                stripped
-            )
+            candidates.append(stripped)
 
-        # --------------------------------------------------------------
-        # JSON array as entire response.
-        # --------------------------------------------------------------
+        # ==============================================================
+        # Entire response is a JSON array
+        # ==============================================================
 
-        if stripped.startswith(
-            "["
-        ) and stripped.endswith(
-            "]"
+        if (
+            stripped.startswith("[")
+            and stripped.endswith("]")
         ):
-            candidates.append(
-                stripped
-            )
+            candidates.append(stripped)
 
-        # --------------------------------------------------------------
-        # Common fenced JSON.
-        # --------------------------------------------------------------
+        # ==============================================================
+        # Fenced JSON
+        # ==============================================================
 
         if "```json" in text:
 
-            blocks = (
-                text.split(
-                    "```json"
-                )[1:]
-            )
+            blocks = text.split("```json")[1:]
 
             for block in blocks:
 
@@ -564,21 +579,16 @@ class QwenEngine:
                 )[0].strip()
 
                 if candidate:
-                    candidates.append(
-                        candidate
-                    )
+                    candidates.append(candidate)
 
-        # --------------------------------------------------------------
-        # Parse candidates.
-        # --------------------------------------------------------------
+        # ==============================================================
+        # Parse candidates
+        # ==============================================================
 
         for candidate in candidates:
 
             try:
-
-                parsed = json.loads(
-                    candidate
-                )
+                parsed = json.loads(candidate)
 
             except json.JSONDecodeError:
                 continue

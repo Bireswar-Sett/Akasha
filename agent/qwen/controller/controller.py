@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent.qwen.controller.executor import ToolExecutor
-from agent.qwen.controller.model import QwenEngine
-from agent.qwen.controller.prompts import SYSTEM_PROMPT
-from agent.qwen.controller.tools import get_tool
+from qwen.controller.executor import ToolExecutor
+from qwen.controller.model import QwenEngine
+from qwen.controller.prompts import SYSTEM_PROMPT
+from qwen.controller.tools import get_tool
 
 
 class QwenController:
@@ -25,14 +25,16 @@ class QwenController:
     ) -> None:
 
         if max_steps < 1:
-            raise ValueError("max_steps must be >= 1.")
+            raise ValueError(
+                "max_steps must be >= 1."
+            )
 
         self.qwen = qwen
         self.executor = executor
         self.max_steps = max_steps
 
     # ==================================================================
-    # Tool definitions
+    # Tools
     # ==================================================================
 
     @staticmethod
@@ -42,7 +44,7 @@ class QwenController:
         ]
 
     # ==================================================================
-    # Tool-result formatting
+    # Tool result → Qwen message
     # ==================================================================
 
     @staticmethod
@@ -63,7 +65,7 @@ class QwenController:
         }
 
     # ==================================================================
-    # Tool-argument injection
+    # Inject backend image URL if Qwen omitted it
     # ==================================================================
 
     @staticmethod
@@ -85,7 +87,7 @@ class QwenController:
         return prepared
 
     # ==================================================================
-    # Controller
+    # Main controller loop
     # ==================================================================
 
     def run(
@@ -95,7 +97,10 @@ class QwenController:
         max_new_tokens: int = 256,
     ) -> str:
 
-        if not isinstance(user_message, str):
+        if not isinstance(
+            user_message,
+            str,
+        ):
             raise TypeError(
                 "user_message must be a string."
             )
@@ -109,7 +114,10 @@ class QwenController:
 
         if image_url is not None:
 
-            if not isinstance(image_url, str):
+            if not isinstance(
+                image_url,
+                str,
+            ):
                 raise TypeError(
                     "image_url must be a string."
                 )
@@ -119,9 +127,14 @@ class QwenController:
             if not image_url:
                 image_url = None
 
-        # --------------------------------------------------------------
+        if not 1 <= max_new_tokens <= 1024:
+            raise ValueError(
+                "max_new_tokens must be between 1 and 1024."
+            )
+
+        # ==============================================================
         # Initial conversation
-        # --------------------------------------------------------------
+        # ==============================================================
 
         messages: list[dict[str, Any]] = [
             {
@@ -136,9 +149,9 @@ class QwenController:
 
         tools = self._get_tools()
 
-        # --------------------------------------------------------------
+        # ==============================================================
         # Agent loop
-        # --------------------------------------------------------------
+        # ==============================================================
 
         for step in range(self.max_steps):
 
@@ -150,13 +163,21 @@ class QwenController:
             response = self.qwen.chat_with_tools(
                 messages=messages,
                 tools=tools,
+                max_new_tokens=max_new_tokens,
             )
 
-            response_type = response.get("type")
+            print(
+                "[QwenController] Qwen response:"
+            )
+            print(response)
 
-            # ----------------------------------------------------------
-            # Qwen decided it can answer directly
-            # ----------------------------------------------------------
+            response_type = response.get(
+                "type"
+            )
+
+            # ==========================================================
+            # Final answer
+            # ==========================================================
 
             if response_type == "text":
 
@@ -165,7 +186,10 @@ class QwenController:
                     "",
                 )
 
-                if not isinstance(final_text, str):
+                if not isinstance(
+                    final_text,
+                    str,
+                ):
                     raise RuntimeError(
                         "Qwen returned invalid final text."
                     )
@@ -179,9 +203,9 @@ class QwenController:
 
                 return final_text
 
-            # ----------------------------------------------------------
-            # Qwen requested specialist tool(s)
-            # ----------------------------------------------------------
+            # ==========================================================
+            # Tool calls
+            # ==========================================================
 
             if response_type != "tool_calls":
 
@@ -196,7 +220,10 @@ class QwenController:
             )
 
             if (
-                not isinstance(tool_calls, list)
+                not isinstance(
+                    tool_calls,
+                    list,
+                )
                 or not tool_calls
             ):
                 raise RuntimeError(
@@ -204,27 +231,33 @@ class QwenController:
                 )
 
             # ----------------------------------------------------------
-            # Preserve the assistant tool-call response
+            # Preserve Qwen's tool call in the conversation.
             # ----------------------------------------------------------
-
-            raw_output = response.get("raw", "")
 
             messages.append(
                 {
                     "role": "assistant",
-                    "content": raw_output,
+                    "content": response.get(
+                        "raw",
+                        "",
+                    ),
                 }
             )
 
-            # ----------------------------------------------------------
+            # ==========================================================
             # Execute requested tools
-            # ----------------------------------------------------------
+            # ==========================================================
 
             for call in tool_calls:
 
-                tool_name = call.get("name")
+                tool_name = call.get(
+                    "name"
+                )
 
-                if not isinstance(tool_name, str):
+                if not isinstance(
+                    tool_name,
+                    str,
+                ):
                     continue
 
                 arguments = call.get(
@@ -232,7 +265,10 @@ class QwenController:
                     {},
                 )
 
-                if not isinstance(arguments, dict):
+                if not isinstance(
+                    arguments,
+                    dict,
+                ):
                     arguments = {}
 
                 arguments = self._prepare_tool_arguments(
@@ -255,6 +291,11 @@ class QwenController:
                     tool_name=tool_name,
                     arguments=arguments,
                 )
+
+                print(
+                    "[QwenController] Tool result:"
+                )
+                print(result)
 
                 messages.append(
                     self._tool_result_message(
