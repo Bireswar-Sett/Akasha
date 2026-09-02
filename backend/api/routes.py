@@ -1,14 +1,11 @@
 import logging
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 
 from fastapi import (
     APIRouter,
     Depends,
-    File,
-    Form,
     HTTPException,
     Security,
-    UploadFile,
     status,
 )
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -20,7 +17,6 @@ from services.firebase_service import (
     get_storage_service,
     verify_firebase_token,
 )
-from services.qwen import query_qwen
 from services.qwen_service import QwenService, get_qwen_service
 
 logger = logging.getLogger("akasha.api")
@@ -43,8 +39,7 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token = credentials.credentials
-    decoded_token = verify_firebase_token(token)
+    decoded_token = verify_firebase_token(credentials.credentials)
     return decoded_token
 
 
@@ -56,15 +51,16 @@ async def analyze_image(
     qwen_service: QwenService = Depends(get_qwen_service),
 ) -> AnalyzeResponse:
     """
-    Production AI analysis endpoint:
-    1. Authenticate the request via Firebase Auth.
-    2. Validate request payload and storage path syntax.
-    3. Verify user authorization to access the specified Firebase Storage object.
-    4. Generate a short-lived signed read URL internally.
-    5. Dispatch inference to Qwen Hugging Face Gradio Space.
-    6. Return Qwen's final synthesized response without exposing internal signed URLs.
+    Satellite image analysis endpoint.
+
+    Flow:
+    1. Authenticate via Firebase ID token.
+    2. Validate Firebase Storage image path.
+    3. Verify user owns the storage object.
+    4. Generate short-lived signed URL (internal only, never returned).
+    5. Call Qwen Gradio Space /ask_akasha with signed URL.
+    6. Return synthesized answer.
     """
-    # Safe structured logging - image path is logged, but NEVER any signed URLs or secrets
     logger.info(f"Qwen request started for image_path={request.image_path}")
 
     user_id = current_user.get("uid")
@@ -74,16 +70,11 @@ async def analyze_image(
             detail="Authenticated user identity lacks a valid UID",
         )
 
-    # 1. Validate image path format and security
     clean_path = storage_service.validate_image_path(request.image_path)
-
-    # 2. Verify authorization
     storage_service.verify_user_authorization(user_id=user_id, image_path=clean_path)
 
-    # 3. Generate short-lived signed URL (verifies object exists first)
     signed_url = storage_service.generate_signed_url(clean_path)
 
-    # 4. Call Qwen Gradio Space
     logger.info("Calling Qwen Space")
     answer = qwen_service.analyze(
         user_message=request.query,
@@ -95,32 +86,11 @@ async def analyze_image(
     return AnalyzeResponse(answer=answer)
 
 
-@router.post("/query")
-async def query(
-    query: str = Form(default=""),
-    images: List[UploadFile] = File(default=[]),
-):
-    """
-    Direct multipart query endpoint (retained for backward compatibility).
-    """
-    image_data_list = []
-    for img in images:
-        content = await img.read()
-        if content:
-            image_data_list.append({
-                "filename": img.filename or "image.png",
-                "content_type": img.content_type or "image/png",
-                "bytes": content,
-            })
-
-    return query_qwen(query, image_data_list)
-
-
 @router.get("/status", response_model=StatusResponse)
 def get_status(settings: Settings = Depends(get_settings)) -> StatusResponse:
     """
     Lightweight health and configuration check.
-    Does NOT perform model inference to preserve ZeroGPU quota.
+    Does NOT perform model inference.
     """
     return StatusResponse(
         status="AKASHA API running",
