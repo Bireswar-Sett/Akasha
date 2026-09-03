@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any
 from fastapi import HTTPException, status
 import firebase_admin
 from firebase_admin import auth, credentials, storage
+from services.auth_service import register_user, authenticate_user, create_access_token, decode_access_token
 
 from config import get_settings
 
@@ -185,8 +186,17 @@ def get_storage_service() -> FirebaseStorageService:
 def verify_firebase_token(token: str) -> Dict[str, Any]:
     """Verify Firebase ID token and return decoded token dict."""
     try:
-        decoded_token = auth.verify_id_token(token)
-        return decoded_token
+        payload = decode_access_token(credentials.credentials)
+
+        user_id = payload.get("sub")
+
+        if not user_id:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid authentication token"
+            )
+
+        return get_user_by_id(user_id)
     except Exception as e:
         logger.warning(f"Firebase token verification failed: {e}")
         raise HTTPException(
