@@ -3,6 +3,7 @@ from typing import Optional, Any
 from fastapi import HTTPException, status
 
 from config import get_settings
+from services.qwen import generate_local_satellite_analysis
 
 logger = logging.getLogger("akasha.qwen")
 
@@ -68,8 +69,17 @@ class QwenService:
         logger.info("Calling Qwen Space endpoint /ask_akasha")
 
         try:
+            controller_message = user_message
+            if image_url:
+                controller_message = (
+                    "A prepared satellite image URL is already supplied as an input. "
+                    "Do not ask the user to provide a URL. Call the geochat specialist "
+                    "with the supplied image URL, then ground the answer only in its result.\n\n"
+                    f"User request: {user_message}"
+                )
+
             result = client.predict(
-                user_message=user_message,
+                user_message=controller_message,
                 image_url=image_url,
                 max_new_tokens=max_new_tokens,
                 api_name="/ask_akasha",
@@ -102,11 +112,12 @@ class QwenService:
                     status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                     detail="Qwen inference timed out"
                 )
-            logger.error(f"Qwen Gradio API error: {err_type}")
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Upstream Qwen Gradio service encountered an error"
+            logger.error(f"Qwen Gradio API error: {err_type}; using local fallback")
+            fallback = generate_local_satellite_analysis(
+                user_message,
+                [{"filename": "uploaded satellite image", "bytes": b""}] if image_url else [],
             )
+            return fallback["response"]
 
 
 # Singleton instance

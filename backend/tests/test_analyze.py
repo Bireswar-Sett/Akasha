@@ -204,6 +204,31 @@ def test_qwen_upstream_failure_returns_502(mock_user, mock_storage, mock_qwen):
         app.dependency_overrides.clear()
 
 
+def test_qwen_upstream_failure_uses_local_fallback(mock_user, mock_storage):
+    qwen_service = QwenService(space="AdityaSingh1531/qwen", token="test-token")
+    qwen_service._client = MagicMock()
+    qwen_service._client.predict.side_effect = RuntimeError("upstream AppError")
+
+    app.dependency_overrides[get_current_user] = lambda: mock_user
+    app.dependency_overrides[get_storage_service] = lambda: mock_storage
+    app.dependency_overrides[get_qwen_service] = lambda: qwen_service
+
+    try:
+        response = client.post(
+            "/api/analyze",
+            json={
+                "image_path": VALID_IMAGE_PATH,
+                "query": "Analyze image while upstream is unavailable",
+            },
+            headers={"Authorization": "Bearer valid-mock-token"},
+        )
+
+        assert response.status_code == 200
+        assert "AKASHA Earth Observation" in response.json()["answer"]
+    finally:
+        app.dependency_overrides.clear()
+
+
 # ---------------------------------------------------------------------------
 # 6. Signed URL is NEVER returned in response
 # ---------------------------------------------------------------------------

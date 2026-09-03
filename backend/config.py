@@ -11,7 +11,7 @@ load_dotenv()
 class Settings:
     qwen_space: str = os.getenv("QWEN_SPACE", "AdityaSingh1531/qwen")
     hf_token: str = os.getenv("HF_TOKEN", "") or os.getenv("HF_INFERENCE_API_KEY", "")
-    signed_url_expiration_seconds: int = int(os.getenv("SIGNED_URL_EXPIRATION_SECONDS", "300"))
+    signed_url_expiration_seconds: int = int(os.getenv("SIGNED_URL_EXPIRATION_SECONDS", "1800"))
     firebase_project_id: str = os.getenv("FIREBASE_PROJECT_ID", "akasha-v1")
     firebase_storage_bucket: str = os.getenv("FIREBASE_STORAGE_BUCKET", "akasha-v1.appspot.com")
     firebase_service_account_key_path: str = os.getenv("FIREBASE_SERVICE_ACCOUNT_KEY_PATH", "")
