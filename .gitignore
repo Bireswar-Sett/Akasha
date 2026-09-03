@@ -249,3 +249,5 @@ local_run.sh
 *.json
 !package.json
 !package-lock.json
+# Firebase service account credentials
+akasha-v1-*.json
