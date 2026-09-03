@@ -244,3 +244,8 @@ results/
 
 local_setup.sh 
 local_run.sh 
+
+# Google Cloud / Firebase service account credentials
+*.json
+!package.json
+!package-lock.json
