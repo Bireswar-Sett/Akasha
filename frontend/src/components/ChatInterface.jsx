@@ -10,8 +10,8 @@ import {
 } from 'lucide-react';
 import axios from 'axios';
 import logoSrc from '../assets/logo.png';
-import { storage, db, auth, isDemoMode } from '../firebaseClient';
-import { ref, uploadBytes } from 'firebase/storage';
+import { storage, db, isDemoMode } from '../firebaseClient';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { collection, addDoc } from 'firebase/firestore';
 
 const ChatInterface = ({ 
@@ -60,34 +60,34 @@ const ChatInterface = ({
     const messagesWithUser = [...(activeSession?.messages || []), userMessage];
     onUpdateSessionMessages(messagesWithUser);
 
-    // Step 2: Upload imagery to Firebase Storage, track storage paths
-    let attachmentMeta = []; // [{ name, storagePath, localUrl }]
-    for (const file of filesToUpload) {
-      if (user && !isDemoMode) {
+    // Step 2: Upload imagery
+    let attachmentUrls = [];
+    if (filesToUpload.length > 0) {
+      for (const file of filesToUpload) {
         try {
-          const storagePath = `users/${user.id}/imagery/${Date.now()}_${file.name}`;
-          const storageRef = ref(storage, storagePath);
-          await uploadBytes(storageRef, file);
-          await addDoc(collection(db, 'users', user.id, 'imagery'), {
-            name: file.name,
-            storagePath,
-            uploadedAt: Date.now(),
-            size: file.size
-          });
-          attachmentMeta.push({ name: file.name, storagePath, localUrl: URL.createObjectURL(file) });
+          let downloadUrl = '';
+          if (user && !isDemoMode) {
+            const storageRef = ref(storage, `users/${user.id}/imagery/${Date.now()}_${file.name}`);
+            const snapshot = await uploadBytes(storageRef, file);
+            downloadUrl = await getDownloadURL(snapshot.ref);
+            await addDoc(collection(db, 'users', user.id, 'imagery'), {
+              name: file.name,
+              url: downloadUrl,
+              uploadedAt: Date.now(),
+              size: file.size
+            });
+          } else {
+            downloadUrl = URL.createObjectURL(file);
+          }
+          attachmentUrls.push({ name: file.name, url: downloadUrl });
         } catch (uploadErr) {
           console.error('Storage upload error:', uploadErr);
-          attachmentMeta.push({ name: file.name, storagePath: null, localUrl: URL.createObjectURL(file) });
+          attachmentUrls.push({ name: file.name, url: URL.createObjectURL(file) });
         }
-      } else {
-        attachmentMeta.push({ name: file.name, storagePath: null, localUrl: URL.createObjectURL(file) });
       }
     }
 
-    const userMessageWithAttachments = {
-      ...userMessage,
-      attachments: attachmentMeta.map(m => ({ name: m.name, url: m.localUrl }))
-    };
+    const userMessageWithAttachments = { ...userMessage, attachments: attachmentUrls };
     const updatedMessages = messagesWithUser.map(m =>
       m.id === userMessage.id ? userMessageWithAttachments : m
     );
@@ -95,55 +95,34 @@ const ChatInterface = ({
 
     try {
       const API_BASE = '/api';
+      const formData = new FormData();
+      formData.append('query', textToSend);
+      filesToUpload.forEach(file => formData.append('images', file));
 
-      // Get Firebase ID token for backend auth
-      let idToken = null;
-      if (user && !isDemoMode && auth.currentUser) {
-        idToken = await auth.currentUser.getIdToken();
-      }
+      const response = await axios.post(`${API_BASE}/query`, formData, { timeout: 30000 });
+      const data = response.data;
 
-      // Use /api/analyze with the storage path (preferred: first uploaded image)
-      const uploadedFile = attachmentMeta.find(m => m.storagePath);
-      if (idToken && uploadedFile?.storagePath) {
-        const response = await axios.post(
-          `${API_BASE}/analyze`,
-          {
-            image_path: uploadedFile.storagePath,
-            query: textToSend,
-            max_new_tokens: 256,
-          },
-          {
-            headers: { Authorization: `Bearer ${idToken}` },
-            timeout: 120000,
-          }
-        );
-        const botMessage = {
-          id: (Date.now() + 1).toString(),
-          sender: 'assistant',
-          text: response.data.answer,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        };
-        onUpdateSessionMessages([...updatedMessages, botMessage]);
-      } else {
-        // Text-only or demo mode: show friendly message
-        const botMessage = {
-          id: (Date.now() + 1).toString(),
-          sender: 'assistant',
-          text: isDemoMode
-            ? '⚠️ Sign in to analyse satellite imagery with Qwen AI.'
-            : '⚠️ Please attach a satellite image to run analysis.',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        };
-        onUpdateSessionMessages([...updatedMessages, botMessage]);
-      }
+      const botMessage = {
+        id: (Date.now() + 1).toString(),
+        sender: 'assistant',
+        text: data.response,
+        modelUsed: data.model_used,
+        mode: data.mode,
+        imageCount: data.image_count,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+      onUpdateSessionMessages([...updatedMessages, botMessage]);
 
     } catch (error) {
       console.error('Backend error:', error?.response?.status, error?.message);
+      const isOffline = !error?.response;
       const botError = {
         id: (Date.now() + 1).toString(),
         sender: 'assistant',
         isError: true,
-        text: `Analysis failed (${error?.response?.status || 'error'}). Please try again.`,
+        text: isOffline
+          ? 'Backend offline. Ensure the Python API service is running on port 8000.'
+          : `Analysis failed (${error?.response?.status || 'error'}). Please try again.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       onUpdateSessionMessages([...updatedMessages, botError]);
