@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import axios from 'axios';
 import logoSrc from '../assets/logo.png';
-import { storage, db, isDemoMode } from '../firebaseClient';
+import { auth, storage, db, isDemoMode } from '../firebaseClient';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { collection, addDoc } from 'firebase/firestore';
 
@@ -109,7 +109,17 @@ const ChatInterface = ({
         throw new Error('You must be signed in to analyze imagery.');
       }
 
-      const idToken = !isDemoMode && user ? await auth.currentUser.getIdToken() : null;
+      const currentFirebaseUser = auth?.currentUser;
+      const idToken = currentFirebaseUser
+        ? await currentFirebaseUser.getIdToken()
+        : isDemoMode
+          ? 'demo-local-token'
+          : null;
+
+      if (!idToken) {
+        throw new Error('Authentication required before analysis can run.');
+      }
+
       const requestBody = {
         query: textToSend,
         image_path: uploadedImagePaths[0] || null,
@@ -118,7 +128,7 @@ const ChatInterface = ({
 
       const response = await axios.post('/api/analyze', requestBody, {
         timeout: 30000,
-        headers: idToken ? { Authorization: `Bearer ${idToken}` } : {},
+        headers: { Authorization: `Bearer ${idToken}` },
       });
       const data = response.data;
 

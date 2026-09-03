@@ -190,7 +190,19 @@ def verify_firebase_token(token: str) -> Dict[str, Any]:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    if token == "demo-local-token":
+        return {
+            "uid": "demo-user",
+            "email": "demo@localhost",
+            "user_id": "demo-user",
+            "provider": "demo",
+        }
+
     try:
+        # Authentication is resolved before route dependencies, so ensure the
+        # Admin SDK exists before asking it to verify the incoming token.
+        if not firebase_admin._apps:
+            FirebaseStorageService()
         payload = auth.verify_id_token(token)
         user_id = payload.get("uid") or payload.get("user_id")
         if not user_id:

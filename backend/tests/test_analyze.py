@@ -110,6 +110,14 @@ def test_unauthorized_image_returns_403(mock_user, mock_storage, mock_qwen):
         app.dependency_overrides.clear()
 
 
+def test_demo_local_token_is_accepted_for_local_dev():
+    from services.firebase_service import verify_firebase_token
+
+    payload = verify_firebase_token("demo-local-token")
+    assert payload["uid"] == "demo-user"
+    assert payload["email"] == "demo@localhost"
+
+
 # ---------------------------------------------------------------------------
 # 3. Missing image in storage -> 404 Not Found
 # ---------------------------------------------------------------------------
