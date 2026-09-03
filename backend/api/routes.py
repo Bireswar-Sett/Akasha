@@ -13,7 +13,6 @@ from fastapi import (
 )
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from api.schemas import AnalyzeRequest, AnalyzeResponse, StatusResponse
 from config import Settings, get_settings
 from services.firebase_service import (
     FirebaseStorageService,
@@ -22,6 +21,13 @@ from services.firebase_service import (
 )
 from services.qwen import query_qwen
 from services.qwen_service import QwenService, get_qwen_service
+
+from api.schemas import (AnalyzeRequest, AnalyzeResponse, StatusResponse,
+                         RegisterRequest, LoginRequest, TokenResponse, UserResponse)
+from config import Settings, get_settings
+from services.firebase_service import FirebaseStorageService, get_storage_service
+from services.qwen_service import QwenService, get_qwen_service
+from services.auth_service import register_user, authenticate_user, create_access_token, decode_access_token
 
 logger = logging.getLogger("akasha.api")
 router = APIRouter()
@@ -32,10 +38,7 @@ security = HTTPBearer(auto_error=False)
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
 ) -> Dict[str, Any]:
-    """
-    Authenticate the current user using Firebase ID token in Authorization header.
-    Expects: 'Bearer <firebase_id_token>'
-    """
+
     if not credentials or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -43,6 +46,58 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    return decode_access_token(credentials.credentials)
+
+
+@router.post(
+    "/auth/register",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def register(request: RegisterRequest) -> UserResponse:
+
+    user = register_user(
+        request.email,
+        request.password,
+    )
+
+    return UserResponse(
+        id=user["id"],
+        email=user["email"],
+    )
+
+
+@router.post(
+    "/auth/login",
+    response_model=TokenResponse,
+)
+def login(request: LoginRequest) -> TokenResponse:
+
+    user = authenticate_user(
+        request.email,
+        request.password,
+    )
+
+    token = create_access_token(user["id"])
+
+    return TokenResponse(
+        access_token=token,
+        token_type="bearer",
+    )
+
+
+@router.get(
+    "/auth/me",
+    response_model=UserResponse,
+)
+def me(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> UserResponse:
+
+    return UserResponse(
+        id=current_user["id"],
+        email=current_user["email"],
+    )
     token = credentials.credentials
     decoded_token = verify_firebase_token(token)
     return decoded_token
@@ -67,11 +122,11 @@ async def analyze_image(
     # Safe structured logging - image path is logged, but NEVER any signed URLs or secrets
     logger.info(f"Qwen request started for image_path={request.image_path}")
 
-    user_id = current_user.get("uid")
+    user_id = current_user.get("id")
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authenticated user identity lacks a valid UID",
+            detail="Authenticated user identity lacks a valid ID",
         )
 
     # 1. Validate image path format and security

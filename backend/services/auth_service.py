@@ -1,0 +1,176 @@
+import os
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Any
+
+from fastapi import HTTPException, status
+from jose import JWTError, jwt
+from pwdlib import PasswordHash
+
+from database import (
+    create_user,
+    get_user_by_email,
+    get_user_by_id,
+)
+
+
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+
+if not SECRET_KEY:
+    raise RuntimeError(
+        "JWT_SECRET_KEY is not configured in the environment"
+    )
+
+ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+
+ACCESS_TOKEN_EXPIRE_MINUTES = int(
+    os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
+)
+
+password_hash = PasswordHash.recommended()
+
+
+def hash_password(password: str) -> str:
+    return password_hash.hash(password)
+
+
+def verify_password(password: str, hashed_password: str) -> bool:
+    return password_hash.verify(password, hashed_password)
+
+
+def register_user(email: str, password: str) -> Dict[str, Any]:
+
+    existing_user = get_user_by_email(email)
+
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with this email already exists",
+        )
+
+    user_id = str(uuid.uuid4())
+
+    password_digest = hash_password(password)
+
+    user = create_user(
+        user_id=user_id,
+        email=email,
+        password_hash=password_digest,
+    )
+
+    return user
+
+
+def authenticate_user(
+    email: str,
+    password: str,
+) -> Dict[str, Any]:
+
+    user = get_user_by_email(email)
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not verify_password(password, user["password_hash"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return user
+
+
+def create_access_token(user_id: str) -> str:
+    now = datetime.now(timezone.utc)
+
+    payload = {
+        "sub": str(user_id),
+        "iat": now,
+        "exp": now + timedelta(
+            minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+        ),
+    }
+
+    token = jwt.encode(
+        payload,
+        SECRET_KEY,
+        algorithm="HS256",
+    )
+
+    return token
+
+def decode_access_token(token: str) -> Dict[str, Any]:
+
+    print("\n========== JWT DEBUG ==========")
+
+    print("TOKEN RECEIVED:")
+    print(token)
+
+    print("\nTOKEN PART COUNT:")
+    print(len(token.split(".")))
+
+    print("\nJWT MODULE:")
+    print(jwt.__file__)
+
+    print("\nALGORITHM VARIABLE:")
+    print(repr(ALGORITHM))
+
+    print("\nSECRET LENGTH:")
+    print(len(SECRET_KEY))
+
+    try:
+        header = jwt.get_unverified_header(token)
+
+        print("\nJWT HEADER:")
+        print(header)
+
+        print("\nHEADER ALGORITHM:")
+        print(repr(header.get("alg")))
+
+    except Exception as e:
+        print("\nHEADER ERROR:")
+        print(repr(e))
+
+    try:
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=["HS256"],
+        )
+
+        print("\nJWT PAYLOAD:")
+        print(payload)
+
+    except Exception as e:
+        print("\nJWT DECODE ERROR:")
+        print(type(e).__name__)
+        print(repr(e))
+
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user_id = payload.get("sub")
+
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token",
+        )
+
+    user = get_user_by_id(user_id)
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User no longer exists",
+        )
+
+    return user
