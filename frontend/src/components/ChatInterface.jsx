@@ -60,29 +60,40 @@ const ChatInterface = ({
     const messagesWithUser = [...(activeSession?.messages || []), userMessage];
     onUpdateSessionMessages(messagesWithUser);
 
-    // Step 2: Upload imagery
+    // Step 2: Upload imagery and keep only the storage path for the backend analysis request.
     let attachmentUrls = [];
+    let uploadedImagePaths = [];
     if (filesToUpload.length > 0) {
       for (const file of filesToUpload) {
         try {
-          let downloadUrl = '';
+          let localPreviewUrl = '';
+          let storagePath = '';
+
           if (user && !isDemoMode) {
-            const storageRef = ref(storage, `users/${user.id}/imagery/${Date.now()}_${file.name}`);
-            const snapshot = await uploadBytes(storageRef, file);
-            downloadUrl = await getDownloadURL(snapshot.ref);
-            await addDoc(collection(db, 'users', user.id, 'imagery'), {
+            const uid = user.uid || user.id || user.firebaseUser?.uid;
+            if (!uid) {
+              throw new Error('Logged-in user does not have a valid Firebase UID.');
+            }
+
+            storagePath = `users/${uid}/imagery/${Date.now()}_${file.name}`;
+            const storageRef = ref(storage, storagePath);
+            await uploadBytes(storageRef, file);
+            await addDoc(collection(db, 'users', uid, 'imagery'), {
               name: file.name,
-              url: downloadUrl,
+              path: storagePath,
               uploadedAt: Date.now(),
               size: file.size
             });
+            uploadedImagePaths.push(storagePath);
+            localPreviewUrl = URL.createObjectURL(file);
           } else {
-            downloadUrl = URL.createObjectURL(file);
+            localPreviewUrl = URL.createObjectURL(file);
           }
-          attachmentUrls.push({ name: file.name, url: downloadUrl });
+
+          attachmentUrls.push({ name: file.name, url: localPreviewUrl });
         } catch (uploadErr) {
           console.error('Storage upload error:', uploadErr);
-          attachmentUrls.push({ name: file.name, url: URL.createObjectURL(file) });
+          throw new Error('Image upload failed. Please try again.');
         }
       }
     }
@@ -94,21 +105,27 @@ const ChatInterface = ({
     onUpdateSessionMessages(updatedMessages);
 
     try {
-      const API_BASE = '/api';
-      const formData = new FormData();
-      formData.append('query', textToSend);
-      filesToUpload.forEach(file => formData.append('images', file));
+      if (!user && !isDemoMode) {
+        throw new Error('You must be signed in to analyze imagery.');
+      }
 
-      const response = await axios.post(`${API_BASE}/query`, formData, { timeout: 30000 });
+      const idToken = !isDemoMode && user ? await auth.currentUser.getIdToken() : null;
+      const requestBody = {
+        query: textToSend,
+        image_path: uploadedImagePaths[0] || null,
+        max_new_tokens: 256,
+      };
+
+      const response = await axios.post('/api/analyze', requestBody, {
+        timeout: 30000,
+        headers: idToken ? { Authorization: `Bearer ${idToken}` } : {},
+      });
       const data = response.data;
 
       const botMessage = {
         id: (Date.now() + 1).toString(),
         sender: 'assistant',
-        text: data.response,
-        modelUsed: data.model_used,
-        mode: data.mode,
-        imageCount: data.image_count,
+        text: data.answer,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       onUpdateSessionMessages([...updatedMessages, botMessage]);
@@ -122,7 +139,7 @@ const ChatInterface = ({
         isError: true,
         text: isOffline
           ? 'Backend offline. Ensure the Python API service is running on port 8000.'
-          : `Analysis failed (${error?.response?.status || 'error'}). Please try again.`,
+          : `Analysis failed (${error?.response?.status || 'error'}): ${error?.response?.data?.detail || error?.message || 'Please try again.'}`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       onUpdateSessionMessages([...updatedMessages, botError]);

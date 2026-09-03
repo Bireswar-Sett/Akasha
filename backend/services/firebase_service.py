@@ -1,5 +1,4 @@
 import os
-import re
 import datetime
 import logging
 from typing import Optional, Dict, Any
@@ -7,7 +6,6 @@ from typing import Optional, Dict, Any
 from fastapi import HTTPException, status
 import firebase_admin
 from firebase_admin import auth, credentials, storage
-from services.auth_service import register_user, authenticate_user, create_access_token, decode_access_token
 
 from config import get_settings
 
@@ -184,22 +182,27 @@ def get_storage_service() -> FirebaseStorageService:
 
 
 def verify_firebase_token(token: str) -> Dict[str, Any]:
-    """Verify Firebase ID token and return decoded token dict."""
-    try:
-        payload = decode_access_token(credentials.credentials)
-
-        user_id = payload.get("sub")
-
-        if not user_id:
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid authentication token"
-            )
-
-        return get_user_by_id(user_id)
-    except Exception as e:
-        logger.warning(f"Firebase token verification failed: {e}")
+    """Verify Firebase ID token and return decoded claims."""
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired authentication credentials"
+            detail="Authentication credentials were not provided",
+            headers={"WWW-Authenticate": "Bearer"},
         )
+
+    try:
+        payload = auth.verify_id_token(token)
+        user_id = payload.get("uid") or payload.get("user_id")
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid Firebase authentication token",
+            )
+        return payload
+    except Exception as exc:
+        logger.warning(f"Firebase token verification failed: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired Firebase credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc

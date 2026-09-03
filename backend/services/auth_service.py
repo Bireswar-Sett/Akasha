@@ -14,15 +14,8 @@ from database import (
 )
 
 
-SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-
-if not SECRET_KEY:
-    raise RuntimeError(
-        "JWT_SECRET_KEY is not configured in the environment"
-    )
-
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-
 ACCESS_TOKEN_EXPIRE_MINUTES = int(
     os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
 )
@@ -86,6 +79,12 @@ def authenticate_user(
 
 
 def create_access_token(user_id: str) -> str:
+    if not SECRET_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="JWT auth is not configured for this environment",
+        )
+
     now = datetime.now(timezone.utc)
 
     payload = {
@@ -99,63 +98,31 @@ def create_access_token(user_id: str) -> str:
     token = jwt.encode(
         payload,
         SECRET_KEY,
-        algorithm="HS256",
+        algorithm=ALGORITHM,
     )
 
     return token
 
+
 def decode_access_token(token: str) -> Dict[str, Any]:
-
-    print("\n========== JWT DEBUG ==========")
-
-    print("TOKEN RECEIVED:")
-    print(token)
-
-    print("\nTOKEN PART COUNT:")
-    print(len(token.split(".")))
-
-    print("\nJWT MODULE:")
-    print(jwt.__file__)
-
-    print("\nALGORITHM VARIABLE:")
-    print(repr(ALGORITHM))
-
-    print("\nSECRET LENGTH:")
-    print(len(SECRET_KEY))
-
-    try:
-        header = jwt.get_unverified_header(token)
-
-        print("\nJWT HEADER:")
-        print(header)
-
-        print("\nHEADER ALGORITHM:")
-        print(repr(header.get("alg")))
-
-    except Exception as e:
-        print("\nHEADER ERROR:")
-        print(repr(e))
+    if not SECRET_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="JWT auth is disabled in this Firebase-only deployment",
+        )
 
     try:
         payload = jwt.decode(
             token,
             SECRET_KEY,
-            algorithms=["HS256"],
+            algorithms=[ALGORITHM],
         )
-
-        print("\nJWT PAYLOAD:")
-        print(payload)
-
-    except Exception as e:
-        print("\nJWT DECODE ERROR:")
-        print(type(e).__name__)
-        print(repr(e))
-
+    except JWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired authentication credentials",
             headers={"WWW-Authenticate": "Bearer"},
-        )
+        ) from exc
 
     user_id = payload.get("sub")
 

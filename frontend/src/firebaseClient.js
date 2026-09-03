@@ -11,8 +11,6 @@ import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
 const rawApiKey = import.meta.env.VITE_FIREBASE_API_KEY || '';
-const isDemoMode = !rawApiKey || rawApiKey === 'your_firebase_api_key_here' || rawApiKey.includes('your_firebase');
-
 const firebaseConfig = {
   apiKey: rawApiKey,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '',
@@ -21,6 +19,17 @@ const firebaseConfig = {
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
   appId: import.meta.env.VITE_FIREBASE_APP_ID || ''
 };
+
+const hasRequiredFirebaseConfig = Boolean(
+  firebaseConfig.apiKey &&
+  firebaseConfig.authDomain &&
+  firebaseConfig.projectId &&
+  firebaseConfig.storageBucket &&
+  firebaseConfig.appId
+);
+const isDemoMode = !hasRequiredFirebaseConfig ||
+  rawApiKey === 'your_firebase_api_key_here' ||
+  rawApiKey.includes('your_firebase');
 
 let app = null;
 let auth = null;
@@ -36,7 +45,8 @@ if (!isDemoMode) {
     storage = getStorage(app);
     googleProvider = new GoogleAuthProvider();
   } catch (err) {
-    console.warn('[AKASHA] Firebase initialization failed, falling back to demo mode:', err);
+    console.error('[AKASHA] Firebase initialization failed. Check the frontend Firebase config.', err);
+    throw err;
   }
 } else {
   console.info(
@@ -47,7 +57,7 @@ if (!isDemoMode) {
 }
 
 const signInWithPopup = async (authInstance, provider) => {
-  if (isDemoMode || !auth) {
+  if (isDemoMode) {
     return {
       user: {
         uid: 'demo-google-user',
@@ -57,11 +67,14 @@ const signInWithPopup = async (authInstance, provider) => {
       }
     };
   }
+  if (!auth || !authInstance) {
+    throw new Error('Firebase auth is not initialized.');
+  }
   return fbSignInWithPopup(authInstance, provider);
 };
 
 const signInWithEmailAndPassword = async (authInstance, email, password) => {
-  if (isDemoMode || !auth) {
+  if (isDemoMode) {
     return {
       user: {
         uid: `demo-${Date.now()}`,
@@ -70,12 +83,15 @@ const signInWithEmailAndPassword = async (authInstance, email, password) => {
         photoURL: null,
       }
     };
+  }
+  if (!auth || !authInstance) {
+    throw new Error('Firebase auth is not initialized.');
   }
   return fbSignInWithEmailAndPassword(authInstance, email, password);
 };
 
 const createUserWithEmailAndPassword = async (authInstance, email, password) => {
-  if (isDemoMode || !auth) {
+  if (isDemoMode) {
     return {
       user: {
         uid: `demo-${Date.now()}`,
@@ -85,12 +101,18 @@ const createUserWithEmailAndPassword = async (authInstance, email, password) => 
       }
     };
   }
+  if (!auth || !authInstance) {
+    throw new Error('Firebase auth is not initialized.');
+  }
   return fbCreateUserWithEmailAndPassword(authInstance, email, password);
 };
 
 const signOut = async (authInstance) => {
-  if (isDemoMode || !auth) {
+  if (isDemoMode) {
     return;
+  }
+  if (!auth || !authInstance) {
+    throw new Error('Firebase auth is not initialized.');
   }
   return fbSignOut(authInstance);
 };

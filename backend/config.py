@@ -22,10 +22,13 @@ class Settings:
 
     @property
     def is_firebase_configured(self) -> bool:
-        return bool(
-            self.firebase_service_account_key_path
-            and os.path.isfile(self.firebase_service_account_key_path)
-        ) or bool(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+        if self.firebase_service_account_key_path and os.path.isfile(self.firebase_service_account_key_path):
+            return True
+        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            return True
+        if self.firebase_project_id or self.firebase_storage_bucket:
+            return True
+        return False
 
 
 settings = Settings()

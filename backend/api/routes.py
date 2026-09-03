@@ -21,13 +21,21 @@ from services.firebase_service import (
 )
 from services.qwen import query_qwen
 from services.qwen_service import QwenService, get_qwen_service
+from services.auth_service import (
+    register_user,
+    authenticate_user,
+    create_access_token,
+)
 
-from api.schemas import (AnalyzeRequest, AnalyzeResponse, StatusResponse,
-                         RegisterRequest, LoginRequest, TokenResponse, UserResponse)
-from config import Settings, get_settings
-from services.firebase_service import FirebaseStorageService, get_storage_service
-from services.qwen_service import QwenService, get_qwen_service
-from services.auth_service import register_user, authenticate_user, create_access_token, decode_access_token
+from api.schemas import (
+    AnalyzeRequest,
+    AnalyzeResponse,
+    StatusResponse,
+    RegisterRequest,
+    LoginRequest,
+    TokenResponse,
+    UserResponse,
+)
 
 logger = logging.getLogger("akasha.api")
 router = APIRouter()
@@ -38,7 +46,6 @@ security = HTTPBearer(auto_error=False)
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
 ) -> Dict[str, Any]:
-
     if not credentials or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -46,7 +53,7 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    return decode_access_token(credentials.credentials)
+    return verify_firebase_token(credentials.credentials)
 
 
 @router.post(
@@ -93,14 +100,12 @@ def login(request: LoginRequest) -> TokenResponse:
 def me(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> UserResponse:
-
+    user_id = current_user.get("uid") or current_user.get("id") or current_user.get("user_id")
+    email = current_user.get("email") or ""
     return UserResponse(
-        id=current_user["id"],
-        email=current_user["email"],
+        id=str(user_id),
+        email=email,
     )
-    token = credentials.credentials
-    decoded_token = verify_firebase_token(token)
-    return decoded_token
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
@@ -122,7 +127,7 @@ async def analyze_image(
     # Safe structured logging - image path is logged, but NEVER any signed URLs or secrets
     logger.info(f"Qwen request started for image_path={request.image_path}")
 
-    user_id = current_user.get("id")
+    user_id = current_user.get("uid") or current_user.get("id") or current_user.get("user_id")
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -154,10 +159,9 @@ async def analyze_image(
 async def query(
     query: str = Form(default=""),
     images: List[UploadFile] = File(default=[]),
+    current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """
-    Direct multipart query endpoint (retained for backward compatibility).
-    """
+    """Direct multipart query endpoint kept behind Firebase auth."""
     image_data_list = []
     for img in images:
         content = await img.read()
