@@ -32,3 +32,29 @@ class StatusResponse(BaseModel):
     version: str = "1.0.0"
     qwen_configured: bool
     firebase_configured: bool
+
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str = Field(..., min_length=6)
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class UserResponse(BaseModel):
+    id: str
+    email: str
+
+class StatusResponse(BaseModel):
+    status: str
+    version: str = "1.0.0"
+    qwen_configured: bool
+    firebase_configured: bool
