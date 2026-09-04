@@ -251,3 +251,4 @@ local_run.sh
 !package-lock.json
 # Firebase service account credentials
 akasha-v1-*.json
+firebase-service-account.json

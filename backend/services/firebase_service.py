@@ -43,8 +43,8 @@ class FirebaseStorageService:
                     # Fallback initialization (e.g., in testing or emulator environments)
                     firebase_admin.initialize_app(options=options)
                     logger.info("Firebase Admin initialized with default options")
-            except Exception as e:
-                logger.warning(f"Firebase Admin initialization deferred or failed: {e}")
+            except Exception:
+                logger.exception("Firebase Admin initialization failed")
 
     def get_bucket(self):
         """Retrieve default storage bucket."""
@@ -120,7 +120,9 @@ class FirebaseStorageService:
             )
 
         if path_user_id != user_id:
-            logger.warning(f"Authorization failure: user={user_id} attempted access to path belonging to {path_user_id}")
+            logger.warning(
+                    "Storage authorization failure for authenticated user"
+                )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied: you do not have permission to access this storage object"
@@ -153,7 +155,17 @@ class FirebaseStorageService:
                 detail="Failed to verify storage object existence"
             )
 
-        exp_seconds = expiration_seconds or self.settings.signed_url_expiration_seconds
+        exp_seconds = (
+            expiration_seconds
+            if expiration_seconds is not None
+            else self.settings.signed_url_expiration_seconds
+        )
+
+        if exp_seconds <= 0 or exp_seconds > 3600:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid signed URL expiration",
+            )
         try:
             signed_url = blob.generate_signed_url(
                 version="v4",
@@ -183,6 +195,7 @@ def get_storage_service() -> FirebaseStorageService:
 
 def verify_firebase_token(token: str) -> Dict[str, Any]:
     """Verify Firebase ID token and return decoded claims."""
+
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -190,29 +203,32 @@ def verify_firebase_token(token: str) -> Dict[str, Any]:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if token == "demo-local-token":
-        return {
-            "uid": "demo-user",
-            "email": "demo@localhost",
-            "user_id": "demo-user",
-            "provider": "demo",
-        }
-
     try:
-        # Authentication is resolved before route dependencies, so ensure the
-        # Admin SDK exists before asking it to verify the incoming token.
+        # Ensure Firebase Admin SDK is initialized
         if not firebase_admin._apps:
             FirebaseStorageService()
+
         payload = auth.verify_id_token(token)
-        user_id = payload.get("uid") or payload.get("user_id")
+
+        user_id = payload.get("uid")
+
         if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid Firebase authentication token",
+                headers={"WWW-Authenticate": "Bearer"},
             )
+
         return payload
+
+    except HTTPException:
+        raise
+
     except Exception as exc:
-        logger.warning(f"Firebase token verification failed: {exc}")
+        logger.warning(
+            "Firebase token verification failed: %s",
+            type(exc).__name__,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired Firebase credentials",

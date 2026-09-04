@@ -22,12 +22,18 @@ class Settings:
 
     @property
     def is_firebase_configured(self) -> bool:
-        if self.firebase_service_account_key_path and os.path.isfile(self.firebase_service_account_key_path):
+        """Return True only when usable Firebase credentials are available."""
+
+        if (
+            self.firebase_service_account_key_path
+            and os.path.isfile(self.firebase_service_account_key_path)
+        ):
             return True
-        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+
+        google_credentials = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if google_credentials and os.path.isfile(google_credentials):
             return True
-        if self.firebase_project_id or self.firebase_storage_bucket:
-            return True
+
         return False
 
 

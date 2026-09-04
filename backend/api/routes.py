@@ -124,27 +124,36 @@ async def analyze_image(
     5. Dispatch inference to Qwen Hugging Face Gradio Space.
     6. Return Qwen's final synthesized response without exposing internal signed URLs.
     """
-    # Safe structured logging - image path is logged, but NEVER any signed URLs or secrets
-    logger.info(f"Qwen request started for image_path={request.image_path}")
 
-    user_id = current_user.get("uid") or current_user.get("id") or current_user.get("user_id")
+    # Safe structured logging - never log signed URLs or secrets
+    logger.info(
+        "Qwen request started for image_path=%s",
+        request.image_path,
+    )
+
+    user_id = current_user.get("uid")
+
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authenticated user identity lacks a valid ID",
+            detail="Invalid Firebase user identity",
         )
 
-    # 1. Validate image path format and security
+    # 1. Validate image path
     clean_path = storage_service.validate_image_path(request.image_path)
 
     # 2. Verify authorization
-    storage_service.verify_user_authorization(user_id=user_id, image_path=clean_path)
+    storage_service.verify_user_authorization(
+        user_id=user_id,
+        image_path=clean_path,
+    )
 
-    # 3. Generate short-lived signed URL (verifies object exists first)
+    # 3. Generate short-lived signed URL
     signed_url = storage_service.generate_signed_url(clean_path)
 
     # 4. Call Qwen Gradio Space
     logger.info("Calling Qwen Space")
+
     answer = qwen_service.analyze(
         user_message=request.query,
         image_url=signed_url,
@@ -152,6 +161,7 @@ async def analyze_image(
     )
 
     logger.info("Qwen request completed")
+
     return AnalyzeResponse(answer=answer)
 
 

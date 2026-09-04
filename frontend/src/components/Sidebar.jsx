@@ -65,7 +65,7 @@ const Sidebar = ({
 
   const onDrop = (acceptedFiles) => {
     if (acceptedFiles && acceptedFiles.length > 0) {
-      onFileSelect([...selectedFiles, ...acceptedFiles]);
+      onFileSelect([...(selectedFiles || []), ...acceptedFiles]);
     }
   };
 

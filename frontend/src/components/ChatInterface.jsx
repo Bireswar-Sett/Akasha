@@ -140,19 +140,36 @@ const ChatInterface = ({
       };
       onUpdateSessionMessages([...updatedMessages, botMessage]);
 
-    } catch (error) {
+    }catch (error) { 
       console.error('Backend error:', error?.response?.status, error?.message);
+
+      const status = error?.response?.status;
+      const detail = error?.response?.data?.detail || '';
       const isOffline = !error?.response;
-      const botError = {
-        id: (Date.now() + 1).toString(),
-        sender: 'assistant',
-        isError: true,
-        text: isOffline
-          ? 'Backend offline. Ensure the Python API service is running on port 8000.'
-          : `Analysis failed (${error?.response?.status || 'error'}): ${error?.response?.data?.detail || error?.message || 'Please try again.'}`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      };
-      onUpdateSessionMessages([...updatedMessages, botError]);
+
+      let errorMessage;
+
+      if (
+        detail.includes('ZeroGPU') ||
+        detail.includes('runs limit') ||
+        detail.includes('daily AI analysis limit')
+      ) {
+        errorMessage = 'Your daily AI analysis limit has been reached. Please try again later.';
+      } else if (isOffline) {
+        errorMessage = 'Backend offline. Ensure the Python API service is running on port 8000.';
+      } else {
+        errorMessage = `Analysis failed (${status || 'error'}): ${detail || error?.message || 'Please try again.'}`;
+      }
+
+      const botError = { 
+        id: (Date.now() + 1).toString(), 
+        sender: 'assistant', 
+        isError: true, 
+        text: errorMessage,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) 
+      }; 
+
+      onUpdateSessionMessages([...updatedMessages, botError]); 
     } finally {
       setIsProcessing(false);
     }
@@ -489,9 +506,15 @@ const ChatInterface = ({
               accept=".tiff,.tif,.png,.jpeg,.jpg"
               style={{ display: 'none' }}
               onChange={(e) => {
-                if (e.target.files) {
-                  onFileSelect([...selectedFiles, ...Array.from(e.target.files)]);
+                const files = Array.from(e.target.files || []);
+
+                console.log('FILE PICKER:', files);
+
+                if (files.length > 0) {
+                  onFileSelect([...(selectedFiles || []), ...files]);
                 }
+
+                e.target.value = '';
               }}
             />
             <Paperclip size={17} />

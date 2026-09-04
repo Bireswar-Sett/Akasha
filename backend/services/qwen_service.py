@@ -102,22 +102,39 @@ class QwenService:
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail="Qwen inference timed out"
             )
+        # except Exception as e:
+        #     err_type = type(e).__name__
+        #     err_str = str(e)
+
+        #     if "timeout" in err_str.lower() or "timed out" in err_str.lower():
+        #         logger.error("Qwen inference upstream timeout: %s", err_type)
+        #         raise HTTPException(
+        #             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+        #             detail="Qwen inference timed out"
+        #         )
+
+        #     logger.error("Qwen Gradio API error: %s", err_type)
+
+        #     raise HTTPException(
+        #         status_code=status.HTTP_502_BAD_GATEWAY,
+        #         detail="Qwen vision inference failed"
+        #     )
         except Exception as e:
             err_type = type(e).__name__
-            err_str = str(e)
-            # Detect timeout keywords in exception strings if client didn't raise TimeoutError directly
-            if "timeout" in err_str.lower() or "timed out" in err_str.lower():
-                logger.error(f"Qwen inference upstream timeout: {err_type}")
+            err_message = str(e)
+
+            logger.exception("Qwen Gradio inference failed")
+
+            if "ZeroGPU runs limit" in err_message or "ZeroGPU" in err_message:
                 raise HTTPException(
-                    status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                    detail="Qwen inference timed out"
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Your daily AI analysis limit has been reached. Please try again later."
                 )
-            logger.error(f"Qwen Gradio API error: {err_type}; using local fallback")
-            fallback = generate_local_satellite_analysis(
-                user_message,
-                [{"filename": "uploaded satellite image", "bytes": b""}] if image_url else [],
+
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="AI analysis is temporarily unavailable. Please try again later."
             )
-            return fallback["response"]
 
 
 # Singleton instance
