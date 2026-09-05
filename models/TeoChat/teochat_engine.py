@@ -1,4 +1,3 @@
-
 import torch
 
 from videollava.eval.eval import load_model
@@ -7,9 +6,8 @@ from videollava.eval.inference import run_inference_single
 
 class TEOChatEngine:
     """
-    Lightweight wrapper around the pretrained TEOChat model.
-
-    The model is loaded once and reused for multiple inference requests.
+    Reusable wrapper around the pretrained TEOChat model.
+    The model is loaded once and reused for multiple requests.
     """
 
     def __init__(
@@ -39,6 +37,7 @@ class TEOChatEngine:
 
         print("TEOChat loaded successfully.")
 
+    @torch.inference_mode()
     def analyze(
         self,
         image_paths,
