@@ -1,5 +1,10 @@
+from __future__ import annotations
+
+import json
 import logging
-from typing import Optional, Any
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
 from fastapi import HTTPException, status
 
 from config import get_settings
@@ -8,43 +13,88 @@ from services.qwen import generate_local_satellite_analysis
 logger = logging.getLogger("akasha.qwen")
 
 
+@dataclass(frozen=True)
+class QwenImageInput:
+    image_id: str
+    signed_url: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class QwenRequest:
+    user_request: str
+    images: tuple[QwenImageInput, ...]
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class QwenRequestBuilder:
+    """Build the private backend-to-Qwen request without exposing URLs in logs."""
+
+    @staticmethod
+    def build(
+        user_request: str,
+        image_urls: list[str],
+        image_metadata: list[dict[str, Any]] | None = None,
+        relationship: dict[str, Any] | None = None,
+    ) -> QwenRequest:
+        if not 1 <= len(image_urls) <= 4:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Qwen supports between one and four image inputs",
+            )
+        if any(not isinstance(url, str) or not url.strip() for url in image_urls):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Qwen image inputs must be non-empty signed URLs",
+            )
+        metadata = image_metadata or [{} for _ in image_urls]
+        if len(metadata) != len(image_urls):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Image metadata must match the number of image inputs",
+            )
+        images = tuple(
+            QwenImageInput(
+                image_id=f"image_{index}",
+                signed_url=url,
+                metadata=dict(item),
+            )
+            for index, (url, item) in enumerate(zip(image_urls, metadata), start=1)
+        )
+        return QwenRequest(
+            user_request=user_request,
+            images=images,
+            metadata={"images": [image.metadata for image in images], "pair_metadata": relationship},
+        )
+
+
 class QwenService:
-    """
-    Client service for calling the deployed Qwen Hugging Face Gradio Space.
-    Architecture:
-      FastAPI backend -> Qwen HF Space -> Qwen controller -> GeoChat HF Space -> Qwen synthesizes final response
-    """
+    """Authenticated client for the signed-URL-only Qwen Gradio Space."""
 
     def __init__(self, space: Optional[str] = None, token: Optional[str] = None):
         settings = get_settings()
         self.space = space or settings.qwen_space
+        self.api_name = settings.qwen_api_name
         self.token = token if token is not None else settings.hf_token
         self._client = None
 
     def _get_client(self):
-        """Lazy initialization of gradio_client.Client."""
         if not self.token:
             logger.error("Attempted to initialize QwenService without HF_TOKEN")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Qwen service is not configured (missing HF_TOKEN)"
+                detail="Qwen service is not configured (missing HF_TOKEN)",
             )
-
         if self._client is None:
             try:
                 from gradio_client import Client
-                # Initialize gradio client pointing to the Qwen Hugging Face Space
-                self._client = Client(
-                    self.space,
-                    token=self.token,
-                )
-            except Exception as e:
-                # Log safe error without exposing token
-                logger.error(f"Failed to connect to Qwen Hugging Face Space: {type(e).__name__}")
+                self._client = Client(self.space, token=self.token)
+            except Exception as exc:
+                logger.error("Failed to connect to Qwen Space: %s", type(exc).__name__)
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="Failed to connect to upstream Qwen Hugging Face Space"
-                )
+                    detail="Failed to connect to upstream Qwen Hugging Face Space",
+                ) from exc
         return self._client
 
     def analyze(
@@ -52,92 +102,69 @@ class QwenService:
         user_message: str,
         image_url: str,
         max_new_tokens: int = 256,
+        *,
+        image_urls: list[str] | None = None,
+        image_metadata: list[dict[str, Any]] | None = None,
+        relationship: dict[str, Any] | None = None,
     ) -> str:
-        """
-        Call the Qwen Gradio Space endpoint '/ask_akasha' with user prompt and signed image URL.
-        Crucial security: image_url MUST be the backend-generated temporary signed URL and NEVER logged.
-        """
-        if not self.token:
-            logger.error("Qwen inference called without HF_TOKEN configured")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Qwen service is not configured (missing HF_TOKEN)"
-            )
-
+        urls = list(image_urls or [image_url])
+        request = QwenRequestBuilder.build(
+            user_request=user_message,
+            image_urls=urls,
+            image_metadata=image_metadata,
+            relationship=relationship,
+        )
         client = self._get_client()
-
-        logger.info("Calling Qwen Space endpoint /ask_akasha")
+        logger.info("Calling Qwen Space endpoint %s for %d image input(s)", self.api_name, len(urls))
 
         try:
-            controller_message = user_message
-            if image_url:
-                controller_message = (
-                    "A prepared satellite image URL is already supplied as an input. "
-                    "Do not ask the user to provide a URL. Call the geochat specialist "
-                    "with the supplied image URL, then ground the answer only in its result.\n\n"
-                    f"User request: {user_message}"
-                )
-
-            result = client.predict(
-                user_message=controller_message,
-                image_url=image_url,
-                max_new_tokens=max_new_tokens,
-                api_name="/ask_akasha",
-            )
+            arguments: dict[str, Any] = {
+                "user_request": request.user_request,
+                "url_1": request.images[0].signed_url,
+                "url_2": request.images[1].signed_url if len(request.images) > 1 else "",
+                "url_3": request.images[2].signed_url if len(request.images) > 2 else "",
+                "url_4": request.images[3].signed_url if len(request.images) > 3 else "",
+                "api_name": self.api_name,
+            }
+            result = client.predict(**arguments)
+            if result is None or not str(result).strip():
+                raise RuntimeError("empty response")
             logger.info("Qwen request completed successfully")
-
-            if result is None:
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="Upstream Qwen model returned an empty response"
-                )
-
-            return str(result).strip()
-
+            return self._response_text(result)
         except HTTPException:
             raise
-        except TimeoutError as te:
+        except TimeoutError as exc:
             logger.error("Qwen Space call timed out")
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Qwen inference timed out"
-            )
-        # except Exception as e:
-        #     err_type = type(e).__name__
-        #     err_str = str(e)
+            return self._local_fallback(request, max_new_tokens, status_code=status.HTTP_504_GATEWAY_TIMEOUT, cause=exc)
+        except Exception as exc:
+            message = str(exc)
+            logger.error("Qwen Gradio inference failed: %s", type(exc).__name__)
+            if "ZeroGPU runs limit" in message or "ZeroGPU" in message:
+                return self._local_fallback(request, max_new_tokens, status_code=status.HTTP_429_TOO_MANY_REQUESTS, cause=exc)
+            return self._local_fallback(request, max_new_tokens, cause=exc)
 
-        #     if "timeout" in err_str.lower() or "timed out" in err_str.lower():
-        #         logger.error("Qwen inference upstream timeout: %s", err_type)
-        #         raise HTTPException(
-        #             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-        #             detail="Qwen inference timed out"
-        #         )
+    @staticmethod
+    def _response_text(result: Any) -> str:
+        text = str(result).strip()
+        try:
+            payload = json.loads(text)
+        except (TypeError, json.JSONDecodeError):
+            return text
+        if isinstance(payload, dict) and isinstance(payload.get("answer"), str):
+            return payload["answer"].strip()
+        return text
 
-        #     logger.error("Qwen Gradio API error: %s", err_type)
-
-        #     raise HTTPException(
-        #         status_code=status.HTTP_502_BAD_GATEWAY,
-        #         detail="Qwen vision inference failed"
-        #     )
-        except Exception as e:
-            err_type = type(e).__name__
-            err_message = str(e)
-
-            logger.exception("Qwen Gradio inference failed")
-
-            if "ZeroGPU runs limit" in err_message or "ZeroGPU" in err_message:
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="Your daily AI analysis limit has been reached. Please try again later."
-                )
-
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="AI analysis is temporarily unavailable. Please try again later."
-            )
+    @staticmethod
+    def _local_fallback(request: QwenRequest, max_new_tokens: int, status_code: int | None = None, cause: Exception | None = None) -> str:
+        images = [{"filename": image.image_id, "bytes": b""} for image in request.images]
+        fallback = generate_local_satellite_analysis(request.user_request, images)
+        if fallback and fallback.get("response"):
+            return str(fallback["response"]).strip()
+        if status_code is not None:
+            raise HTTPException(status_code=status_code, detail="Qwen inference is temporarily unavailable") from cause
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="AI analysis is temporarily unavailable") from cause
 
 
-# Singleton instance
 _qwen_service_instance: Optional[QwenService] = None
 
 
