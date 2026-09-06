@@ -11,6 +11,7 @@ Pillow
 numpy
 rasterio
 fastapi
+gradio
 uvicorn[standard]
 python-multipart
 tiktoken
