@@ -9,7 +9,7 @@ load_dotenv()
 
 @dataclass(frozen=True)
 class Settings:
-    qwen_space: str = os.getenv("QWEN_SPACE", "AdityaSingh1531/qwen")
+    qwen_space: str = os.getenv("QWEN_SPACE", "Bireswar26/Qwen")
     qwen_api_name: str = os.getenv("QWEN_API_NAME", "/analyze")
     hf_token: str = os.getenv("HF_TOKEN", "") or os.getenv("HF_INFERENCE_API_KEY", "")
     signed_url_expiration_seconds: int = int(os.getenv("SIGNED_URL_EXPIRATION_SECONDS", "1800"))
