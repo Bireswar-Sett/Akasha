@@ -186,8 +186,8 @@ class ToolExecutor:
                 "teochat",
                 TEOCHAT_SPACE,
             ).predict(
-                image_1=handle_file(image_1),
-                image_2=handle_file(image_2),
+                image_t1=handle_file(image_1),
+                image_t2=handle_file(image_2),
                 prompt=prompt,
                 max_new_tokens=max_tokens,
                 api_name=TEOCHAT_API_NAME,
