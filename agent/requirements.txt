@@ -1,0 +1,16 @@
+transformers
+accelerate
+bitsandbytes>=0.50.0
+sentencepiece
+protobuf
+safetensors
+Pillow
+numpy
+tiktoken
+torchvision
+gradio_client
+pydantic>=2.7
+requests>=2.32
+rasterio>=1.3
+scipy>=1.12
+shapely>=2.0

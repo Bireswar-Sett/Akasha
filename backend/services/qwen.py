@@ -1,5 +1,4 @@
 import os
-import base64
 try:
     from openai import OpenAI
 except ImportError:
@@ -15,36 +14,10 @@ SYSTEM_PROMPT = (
 
 
 def query_hf_space(query: str, images: list = None) -> dict:
-    """Call the Qwen Gradio Space directly using HF_TOKEN."""
-    space_name = os.getenv("QWEN_SPACE", "AdityaSingh1531/qwen")
-    hf_token = os.getenv("HF_TOKEN", "").strip()
-    if not hf_token:
-        return None
-    try:
-        from gradio_client import Client
-        client = Client(space_name, token=hf_token)
-        image_url = ""
-        if images and len(images) > 0:
-            b64 = base64.b64encode(images[0]["bytes"]).decode("utf-8")
-            mime = images[0].get("content_type") or "image/png"
-            image_url = f"data:{mime};base64,{b64}"
-
-        prompt = query or "Analyze this satellite imagery."
-        result = client.predict(
-            user_message=prompt,
-            image_url=image_url,
-            max_new_tokens=512,
-            api_name="/ask_akasha",
-        )
-        if result:
-            return {
-                "model_used": f"Qwen Space ({space_name})",
-                "response": str(result).strip(),
-                "image_count": len(images or []),
-                "mode": "hf_space"
-            }
-    except Exception as err:
-        print(f"[AKASHA] HF Space call failed: {err}")
+    """Legacy compatibility hook; uploaded bytes are never forwarded to Qwen."""
+    # The production Qwen path is QwenService, which accepts only backend-
+    # generated signed URLs. The legacy multipart endpoint has no authorized
+    # storage reference, so its existing local fallback remains the safe path.
     return None
 
 

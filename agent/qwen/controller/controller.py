@@ -1,310 +1,103 @@
 from __future__ import annotations
 
-import json
+import logging
+from time import perf_counter
 from typing import Any
 
 from qwen.controller.executor import ToolExecutor
 from qwen.controller.model import QwenEngine
-from qwen.controller.prompts import SYSTEM_PROMPT
-from qwen.controller.tools import get_tool
+from qwen.controller.planner import PlanningError, TaskPlanner
+from qwen.controller.prompts import FINAL_REASONING_PROMPT
+from qwen.controller.schemas import (
+    AnalysisRequest,
+    AnalysisResponse,
+    ExecutionTrace,
+    SpecialistEvidence,
+)
+
+logger = logging.getLogger("satquery.controller")
 
 
 class QwenController:
-    """
-    Akasha controller.
+    """Plan, execute, and synthesize one isolated analysis request."""
 
-    Qwen decides which specialist tool to use.
-    ToolExecutor handles communication with the hosted specialist.
-    """
-
-    def __init__(
-        self,
-        qwen: QwenEngine,
-        executor: ToolExecutor,
-        max_steps: int = 4,
-    ) -> None:
-
+    def __init__(self, qwen: QwenEngine, executor: ToolExecutor, max_steps: int = 8, planner: TaskPlanner | None = None) -> None:
         if max_steps < 1:
-            raise ValueError(
-                "max_steps must be >= 1."
-            )
-
+            raise ValueError("max_steps must be >= 1")
         self.qwen = qwen
         self.executor = executor
         self.max_steps = max_steps
+        self.planner = planner or TaskPlanner()
 
-    # ==================================================================
-    # Tools
-    # ==================================================================
+    def run_request(self, request: AnalysisRequest, max_new_tokens: int = 512) -> dict[str, Any]:
+        try:
+            plan = self.planner.plan(request)
+        except (PlanningError, ValueError) as exc:
+            return AnalysisResponse(status="input_incompatible", error={"reason": str(exc)}).model_dump()
 
-    @staticmethod
-    def _get_tools() -> list[dict[str, Any]]:
-        return [
-            get_tool("geochat"),
-        ]
-
-    # ==================================================================
-    # Tool result → Qwen message
-    # ==================================================================
-
-    @staticmethod
-    def _tool_result_message(
-        tool_name: str,
-        result: dict[str, Any],
-    ) -> dict[str, Any]:
-
-        return {
-            "role": "tool",
-            "content": json.dumps(
-                {
-                    "tool": tool_name,
-                    **result,
-                },
-                ensure_ascii=False,
-            ),
+        base = {
+            "task": {"type": plan.task_type.value, "description": plan.task_description},
+            "input": {
+                "configuration": plan.input_configuration.value,
+                "images_used": plan.images_used,
+                "user_query": request.user_query,
+                "bounding_boxes": [box.model_dump() for box in plan.bounding_boxes],
+            },
         }
+        if plan.compatibility_issue:
+            return AnalysisResponse(status="input_incompatible", **base, error=plan.compatibility_issue).model_dump()
 
-    # ==================================================================
-    # Inject backend image URL if Qwen omitted it
-    # ==================================================================
+        images = self.planner._images(request)
+        image_refs = {image.image_id: image.url for image in images}
+        evidence: list[SpecialistEvidence] = []
+        trace: list[ExecutionTrace] = []
+        artifacts: dict[str, Any] = {}
+
+        for index, call in enumerate(plan.calls, start=1):
+            arguments = self._bind_authorized_references(call.arguments, image_refs, artifacts)
+            started = perf_counter()
+            result = self.executor.execute(call.name, arguments)
+            duration_ms = int((perf_counter() - started) * 1000)
+            ok = bool(result.get("ok"))
+            trace.append(ExecutionTrace(step=index, tool=call.name, operation=call.operation, status="completed" if ok else "failed", duration_ms=duration_ms, bounding_boxes=call.bounding_boxes))
+            if not ok:
+                return AnalysisResponse(status="failed", **base, execution=trace, evidence=evidence, error={"tool": call.name, "reason": result.get("error", "specialist failed")}).model_dump()
+            result_value = result.get("result", result)
+            if call.name == "pseudo_rgb" and isinstance(result_value, dict):
+                artifacts["artifact:pseudo_rgb"] = result_value.get("image_ref")
+            evidence.append(SpecialistEvidence(tool=call.name, operation=call.operation, result=result_value, bounding_boxes=call.bounding_boxes))
+
+        answer = self._synthesize(request.user_query or request.user_request, base, evidence, max_new_tokens)
+        return AnalysisResponse(status="completed", **base, execution=trace, evidence=evidence, answer=answer).model_dump()
+
+    def run(self, user_message: str, manifest: dict[str, Any], image_refs: dict[str, str | None], max_new_tokens: int = 512) -> dict[str, Any]:
+        urls = [value for value in image_refs.values() if value]
+        request = AnalysisRequest(user_request=user_message, signed_image_urls=urls, metadata=manifest)
+        return self.run_request(request, max_new_tokens)
+
+    def _synthesize(self, user_request: str, base: dict[str, Any], evidence: list[SpecialistEvidence], max_new_tokens: int) -> str:
+        messages = [
+            {"role": "system", "content": FINAL_REASONING_PROMPT},
+            {"role": "user", "content": self._final_reasoning_message(user_request, base, [item.model_dump() for item in evidence])},
+        ]
+        answer = self.qwen.chat(messages, max_new_tokens=max_new_tokens, temperature=0.1, top_p=0.9, do_sample=False)
+        if not str(answer).strip():
+            raise RuntimeError("Qwen produced an empty response")
+        return str(answer).strip()
 
     @staticmethod
-    def _prepare_tool_arguments(
-        tool_name: str,
-        arguments: dict[str, Any],
-        image_url: str | None,
-    ) -> dict[str, Any]:
+    def _final_reasoning_message(user_request: str, base: dict[str, Any], evidence: list[dict[str, Any]]) -> str:
+        import json
+        return "USER REQUEST\n" + user_request + "\n\nINPUT\n" + json.dumps(base, default=str) + "\n\nSPECIALIST EVIDENCE\n" + json.dumps(evidence, default=str) + "\n\nAnswer only from this evidence; do not expose hidden reasoning."
 
-        prepared = dict(arguments)
-
-        if (
-            tool_name == "geochat"
-            and "image_url" not in prepared
-            and image_url
-        ):
-            prepared["image_url"] = image_url
-
-        return prepared
-
-    # ==================================================================
-    # Main controller loop
-    # ==================================================================
-
-    def run(
-        self,
-        user_message: str,
-        image_url: str | None = None,
-        max_new_tokens: int = 256,
-    ) -> str:
-
-        if not isinstance(
-            user_message,
-            str,
-        ):
-            raise TypeError(
-                "user_message must be a string."
-            )
-
-        user_message = user_message.strip()
-
-        if not user_message:
-            raise ValueError(
-                "user_message must not be empty."
-            )
-
-        if image_url is not None:
-
-            if not isinstance(
-                image_url,
-                str,
-            ):
-                raise TypeError(
-                    "image_url must be a string."
-                )
-
-            image_url = image_url.strip()
-
-            if not image_url:
-                image_url = None
-
-        if not 1 <= max_new_tokens <= 1024:
-            raise ValueError(
-                "max_new_tokens must be between 1 and 1024."
-            )
-
-        # ==============================================================
-        # Initial conversation
-        # ==============================================================
-
-        messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT,
-            },
-            {
-                "role": "user",
-                "content": user_message,
-            },
-        ]
-
-        tools = self._get_tools()
-
-        # ==============================================================
-        # Agent loop
-        # ==============================================================
-
-        for step in range(self.max_steps):
-
-            print(
-                f"[QwenController] Step "
-                f"{step + 1}/{self.max_steps}"
-            )
-
-            response = self.qwen.chat_with_tools(
-                messages=messages,
-                tools=tools,
-                max_new_tokens=max_new_tokens,
-            )
-
-            print(
-                "[QwenController] Qwen response:"
-            )
-            print(response)
-
-            response_type = response.get(
-                "type"
-            )
-
-            # ==========================================================
-            # Final answer
-            # ==========================================================
-
-            if response_type == "text":
-
-                final_text = response.get(
-                    "content",
-                    "",
-                )
-
-                if not isinstance(
-                    final_text,
-                    str,
-                ):
-                    raise RuntimeError(
-                        "Qwen returned invalid final text."
-                    )
-
-                final_text = final_text.strip()
-
-                if not final_text:
-                    raise RuntimeError(
-                        "Qwen returned an empty final response."
-                    )
-
-                return final_text
-
-            # ==========================================================
-            # Tool calls
-            # ==========================================================
-
-            if response_type != "tool_calls":
-
-                raise RuntimeError(
-                    "Unexpected Qwen response type: "
-                    f"{response_type!r}"
-                )
-
-            tool_calls = response.get(
-                "tool_calls",
-                [],
-            )
-
-            if (
-                not isinstance(
-                    tool_calls,
-                    list,
-                )
-                or not tool_calls
-            ):
-                raise RuntimeError(
-                    "Qwen returned an empty tool call list."
-                )
-
-            # ----------------------------------------------------------
-            # Preserve Qwen's tool call in the conversation.
-            # ----------------------------------------------------------
-
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": response.get(
-                        "raw",
-                        "",
-                    ),
-                }
-            )
-
-            # ==========================================================
-            # Execute requested tools
-            # ==========================================================
-
-            for call in tool_calls:
-
-                tool_name = call.get(
-                    "name"
-                )
-
-                if not isinstance(
-                    tool_name,
-                    str,
-                ):
-                    continue
-
-                arguments = call.get(
-                    "arguments",
-                    {},
-                )
-
-                if not isinstance(
-                    arguments,
-                    dict,
-                ):
-                    arguments = {}
-
-                arguments = self._prepare_tool_arguments(
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    image_url=image_url,
-                )
-
-                print(
-                    f"[QwenController] Tool: "
-                    f"{tool_name}"
-                )
-
-                print(
-                    f"[QwenController] Arguments: "
-                    f"{arguments}"
-                )
-
-                result = self.executor.execute(
-                    tool_name=tool_name,
-                    arguments=arguments,
-                )
-
-                print(
-                    "[QwenController] Tool result:"
-                )
-                print(result)
-
-                messages.append(
-                    self._tool_result_message(
-                        tool_name,
-                        result,
-                    )
-                )
-
-        raise RuntimeError(
-            "Qwen controller reached max_steps "
-            "without producing a final answer."
-        )
+    @staticmethod
+    def _bind_authorized_references(arguments: dict[str, Any], image_refs: dict[str, str], artifacts: dict[str, Any]) -> dict[str, Any]:
+        bound = dict(arguments)
+        for key, value in list(bound.items()):
+            if not key.endswith("ref") or not isinstance(value, str):
+                continue
+            if value in image_refs:
+                bound[key] = image_refs[value]
+            elif value in artifacts:
+                bound[key] = artifacts[value]
+        return bound

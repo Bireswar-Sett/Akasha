@@ -1,3 +1,57 @@
+---
+title: SatQuery AI TEOChat Specialist
+sdk: gradio
+app_file: app.py
+---
+
+# TEOChat Specialist
+
+TEOChat is a downstream specialist called by Qwen for multi-image temporal
+or cross-modal inference. The existing VideoLLaVA/TEOChat model, processor,
+conversation handling, and interleaved multi-image inference remain intact.
+
+## Service contract
+
+The Gradio API is `/teochat` and accepts four optional ordered image inputs,
+one specialist prompt, and a system-controlled generation limit:
+
+```text
+image_1, image_2, image_3, image_4: file inputs
+prompt: specialist instruction
+max_new_tokens: hidden system configuration, 1..1024
+```
+
+At least one image is required. Multiple images are passed together to one
+`TEOChatEngine.analyze` call, preserving the model's interleaved temporal
+behavior. TEOChat does not route workflows, access Firebase, create signed
+URLs, or synthesize the final user answer.
+
+## Structured result
+
+The endpoint returns JSON with `answer`, `bounding_boxes`, `input_regions`,
+and `evidence`. Legacy model output such as `[20, 30, 70, 80]` becomes an
+image-associated canonical box:
+
+```json
+{
+  "image_index": 0,
+  "box": {
+    "x_left": 20,
+    "y_top": 30,
+    "x_right": 70,
+    "y_bottom": 80,
+    "angle": 0
+  }
+}
+```
+
+Canonical `{x_left,y_top,x_right,y_bottom|angle}` output is also preserved.
+Axis-aligned legacy boxes use angle `0`; no confidence or spatial evidence
+is fabricated. Multiple boxes and image/frame markers are preserved.
+
+The existing FastAPI-style model service is not required by the Qwen adapter;
+`app.py` is the specialist Gradio entrypoint. Signed URLs are converted to
+temporary files by the Gradio client transport, outside TEOChat authorization.
 
 
 <p align="center">

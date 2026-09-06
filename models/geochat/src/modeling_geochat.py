@@ -43,19 +43,11 @@ class GeoChatLlamaModel(LlamaModel):
             output_dim=config.hidden_size,
         )
 
-    # ------------------------------------------------------------------
-    # Accessors
-    # ------------------------------------------------------------------
-
     def get_vision_tower(self) -> GeoChatVisionTower:
         return self.vision_tower
 
     def get_mm_projector(self):
         return self.mm_projector
-
-    # ------------------------------------------------------------------
-    # Vision
-    # ------------------------------------------------------------------
 
     def encode_images(self, pixel_values: Tensor) -> Tensor:
         print("\n[DEBUG] encode_images")
@@ -96,10 +88,6 @@ class GeoChatLlamaModel(LlamaModel):
         )
 
         return projected
-
-    # ------------------------------------------------------------------
-    # Image token handling
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _find_image_positions(
@@ -451,21 +439,6 @@ class GeoChatLlamaModel(LlamaModel):
 
 
 class GeoChatLlamaForCausalLM(LlamaForCausalLM):
-    """
-    GeoChat multimodal causal language model.
-
-    Architecture:
-
-        CLIP
-          ↓
-        projector
-          ↓
-        visual tokens
-          ↓
-        LLaMA
-          ↓
-        language output
-    """
 
     config_class = GeoChatConfig
 
@@ -474,10 +447,6 @@ class GeoChatLlamaForCausalLM(LlamaForCausalLM):
 
         # Replace the standard LLaMA backbone with our multimodal one.
         self.model = GeoChatLlamaModel(config)
-
-    # ------------------------------------------------------------------
-    # Accessors
-    # ------------------------------------------------------------------
 
     def get_model(self) -> GeoChatLlamaModel:
         return self.model
@@ -496,10 +465,6 @@ class GeoChatLlamaForCausalLM(LlamaForCausalLM):
             pixel_values
         )
 
-    # ------------------------------------------------------------------
-    # Multimodal forward
-    # ------------------------------------------------------------------
-
     def forward(
     self,
     input_ids: Optional[Tensor] = None,
@@ -515,24 +480,11 @@ class GeoChatLlamaForCausalLM(LlamaForCausalLM):
     cache_position: Optional[Tensor] = None,
     **kwargs,
 ):
-        """
-        GeoChat multimodal causal-LM forward.
-
-        First pass:
-            text + image -> multimodal embeddings
-
-        Cached pass:
-            one new token + existing KV cache
-        """
 
         if input_ids is None and inputs_embeds is None:
             raise ValueError(
                 "Either input_ids or inputs_embeds must be provided."
             )
-
-        # ==============================================================
-        # FIRST MULTIMODAL PASS
-        # ==============================================================
 
         is_first_multimodal_pass = (
             pixel_values is not None
@@ -554,19 +506,11 @@ class GeoChatLlamaForCausalLM(LlamaForCausalLM):
                 labels=labels,
             )
 
-            # ----------------------------------------------------------
-            # The image sentinel has now been replaced by 576 visual
-            # embeddings.
-            # ----------------------------------------------------------
-
             input_ids = None
             pixel_values = None
 
             multimodal_length = inputs_embeds.shape[1]
 
-            # The multimodal attention mask is already returned by
-            # prepare_multimodal_inputs(). Do not replace it with the
-            # original text-only mask.
             if attention_mask is None:
                 attention_mask = torch.ones(
                     (
@@ -576,13 +520,6 @@ class GeoChatLlamaForCausalLM(LlamaForCausalLM):
                     dtype=torch.long,
                     device=inputs_embeds.device,
                 )
-
-            # ----------------------------------------------------------
-            # IMPORTANT:
-            #
-            # For the initial pass, explicitly define positions for the
-            # complete multimodal sequence.
-            # ----------------------------------------------------------
 
             position_ids = torch.arange(
                 multimodal_length,
@@ -596,10 +533,6 @@ class GeoChatLlamaForCausalLM(LlamaForCausalLM):
                 dtype=torch.long,
             )
 
-        # ==============================================================
-        # CACHED DECODING
-        # ==============================================================
-
         elif past_key_values is not None:
 
             # The caller is responsible for giving us only the new
@@ -612,14 +545,6 @@ class GeoChatLlamaForCausalLM(LlamaForCausalLM):
             # The image has already been consumed by the cache.
             pixel_values = None
 
-            # ----------------------------------------------------------
-            # CRITICAL:
-            #
-            # Let LlamaModel derive the new position from the existing
-            # cache unless the caller explicitly supplied one.
-            #
-            # DynamicCache tracks the number of tokens already seen.
-            # ----------------------------------------------------------
 
             if position_ids is not None:
                 position_ids = position_ids[:, -1:]

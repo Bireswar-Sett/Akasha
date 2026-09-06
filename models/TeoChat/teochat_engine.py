@@ -49,19 +49,16 @@ class TEOChatEngine:
         if isinstance(image_paths, str):
             image_paths = [image_paths]
 
-        if not image_paths:
-            raise ValueError("At least one image is required.")
+        if len(image_paths) != 2:
+            raise ValueError("TEOChat requires exactly two optical images: T1 and T2.")
 
         if not instruction or not instruction.strip():
             raise ValueError("Instruction cannot be empty.")
 
-        if len(image_paths) == 1:
-            prefix = "This is a satellite image: <video>\n"
-        else:
-            prefix = (
-                "This is a sequence of satellite images capturing the same "
-                "location at different times in chronological order: <video>\n"
-            )
+        prefix = (
+            "These are two optical satellite images of the same location at "
+            "different times, provided in chronological order T1 then T2: <video>\n"
+        )
 
         prompt = prefix + instruction.strip()
 

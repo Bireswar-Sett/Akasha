@@ -8,6 +8,7 @@ import firebase_admin
 from firebase_admin import auth, credentials, storage
 
 from config import get_settings
+from services.image_metadata import normalize_storage_metadata
 
 logger = logging.getLogger("akasha.firebase")
 
@@ -180,6 +181,20 @@ class FirebaseStorageService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to generate secure temporary access for image"
             )
+
+    def get_image_metadata(self, image_path: str) -> Dict[str, Any]:
+        """Return trusted Storage metadata without classifying unknown imagery."""
+        clean_path = self.validate_image_path(image_path)
+        try:
+            blob = self.get_bucket().blob(clean_path)
+            if not blob.exists():
+                raise HTTPException(status_code=404, detail="The requested image object was not found in storage")
+            return normalize_storage_metadata(clean_path, blob)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error("Failed to resolve image metadata: %s", type(exc).__name__)
+            raise HTTPException(status_code=500, detail="Failed to resolve image metadata") from exc
 
 
 # Singleton instance

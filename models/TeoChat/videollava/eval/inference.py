@@ -3,6 +3,11 @@ import torch
 from tqdm import tqdm
 from datetime import datetime
 
+try:
+    from bbox_parser import extract_bboxes
+except ModuleNotFoundError:
+    from models.TeoChat.bbox_parser import extract_bboxes
+
 from videollava.conversation import conv_templates, SeparatorStyle
 from videollava.mm_utils import tokenizer_image_token, KeywordsStoppingCriteria
 from videollava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_VIDEO_TOKEN
@@ -75,14 +80,6 @@ def run_inference_single(
     outputs = tokenizer.decode(output_ids[0, input_ids.shape[1]:]).replace('</s>', '').strip()
 
     return outputs
-
-
-def extract_bboxes(bbox_str):
-    # Regular expression to find numbers within brackets
-    pattern = re.compile(r'\[(\d+), (\d+), (\d+), (\d+)\]')
-    # Find all matches and convert them to lists of integers
-    bboxes = [list(map(int, match.groups())) for match in pattern.finditer(bbox_str)]
-    return bboxes
 
 
 def run_inference(

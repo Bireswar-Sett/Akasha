@@ -7,6 +7,9 @@ class GeoChatResponse(BaseModel):
     response: str
     model: str
     modality: str
+    status: str = "completed"
+    tool: str = "GeoChat"
+    evidence: dict = Field(default_factory=dict)
 
 
 class GeoChatHealthResponse(BaseModel):

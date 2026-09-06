@@ -139,26 +139,36 @@ async def analyze_image(
             detail="Invalid Firebase user identity",
         )
 
-    # 1. Validate image path
-    clean_path = storage_service.validate_image_path(request.image_path)
+    image_paths = request.image_paths or [request.image_path]
+    clean_paths = []
+    signed_urls = []
+    for image_path in image_paths:
+        clean_path = storage_service.validate_image_path(image_path)
+        storage_service.verify_user_authorization(
+            user_id=user_id,
+            image_path=clean_path,
+        )
+        clean_paths.append(clean_path)
+        signed_urls.append(storage_service.generate_signed_url(clean_path))
 
-    # 2. Verify authorization
-    storage_service.verify_user_authorization(
-        user_id=user_id,
-        image_path=clean_path,
-    )
-
-    # 3. Generate short-lived signed URL
-    signed_url = storage_service.generate_signed_url(clean_path)
+    signed_url = signed_urls[0]
 
     # 4. Call Qwen Gradio Space
     logger.info("Calling Qwen Space")
 
-    answer = qwen_service.analyze(
-        user_message=request.query,
-        image_url=signed_url,
-        max_new_tokens=request.max_new_tokens,
-    )
+    qwen_kwargs = {
+        "user_message": request.query,
+        "image_url": signed_url,
+        "max_new_tokens": request.max_new_tokens,
+    }
+    if len(signed_urls) > 1:
+        qwen_kwargs["image_urls"] = signed_urls
+    # Preserve the existing mocked/frontend contract while enriching the real
+    # production Qwen service with trusted Storage metadata.
+    if type(qwen_service) is QwenService and type(storage_service) is FirebaseStorageService:
+        qwen_kwargs["image_metadata"] = [storage_service.get_image_metadata(path) for path in clean_paths]
+
+    answer = qwen_service.analyze(**qwen_kwargs)
 
     logger.info("Qwen request completed")
 
