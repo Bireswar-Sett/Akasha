@@ -21,7 +21,14 @@ def test_two_file_sar_manifest_is_transmitted_without_urls_in_manifest():
     assert "url" not in request.metadata["physical_files"][0]
 
 
-def test_multiple_urls_without_manifest_are_rejected():
-    with pytest.raises(HTTPException, match="Manifest"):
-        QwenRequestBuilder.build("Compare", ["https://storage.example/one", "https://storage.example/two"])
-
+def test_multiple_urls_are_grouped_from_trusted_metadata_without_client_manifest():
+    request = QwenRequestBuilder.build(
+        "Describe this SAR image",
+        ["https://storage.example/vv", "https://storage.example/vh"],
+        image_metadata=[
+            {"modality": "sar", "polarization": "VV"},
+            {"modality": "sar", "polarization": "VH"},
+        ],
+    )
+    assert len(request.metadata["observations"]) == 1
+    assert request.metadata["observations"][0]["modality"] == "sar"

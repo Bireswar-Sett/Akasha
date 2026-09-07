@@ -10,12 +10,17 @@ def test_qwen_request_builder_supports_four_signed_urls():
     request = QwenRequestBuilder.build(
         "What changed?",
         [f"https://storage.example/{index}" for index in range(4)],
-        image_metadata=[{"polarization": role} for role in ("VV", "VH", "VV", "VH")],
-        relationship={"relationship": "bi_temporal"},
+        image_metadata=[
+            {"modality": "sar", "polarization": "VV", "observation_id": "t1", "acquisition_time": "2024-01-01", "relationship_type": "bi_temporal", "spatially_corresponding": True},
+            {"modality": "sar", "polarization": "VH", "observation_id": "t1", "acquisition_time": "2024-01-01", "relationship_type": "bi_temporal", "spatially_corresponding": True},
+            {"modality": "sar", "polarization": "VV", "observation_id": "t2", "acquisition_time": "2025-01-01", "relationship_type": "bi_temporal", "spatially_corresponding": True},
+            {"modality": "sar", "polarization": "VH", "observation_id": "t2", "acquisition_time": "2025-01-01", "relationship_type": "bi_temporal", "spatially_corresponding": True},
+        ],
     )
     assert len(request.images) == 4
     assert request.images[0].metadata["polarization"] == "VV"
-    assert request.metadata["pair_metadata"]["relationship"] == "bi_temporal"
+    assert request.metadata["relationship"]["type"] == "bi_temporal"
+    assert len(request.metadata["observations"]) == 2
 
 
 def test_qwen_request_builder_rejects_fifth_url():
@@ -38,17 +43,17 @@ def test_qwen_service_calls_current_signed_url_interface():
     result = service.analyze(
         "Describe the image",
         "https://storage.example/one",
-        image_urls=["https://storage.example/one", "https://storage.example/two"],
+        image_metadata=[{"modality": "optical"}],
     )
 
     assert result == "grounded answer"
     service._client.predict.assert_called_once_with(
         user_request="Describe the image",
         url_1="https://storage.example/one",
-        url_2="https://storage.example/two",
+        url_2="",
         url_3="",
         url_4="",
-        manifest_json='{"images": [{}, {}], "pair_metadata": null}',
+        manifest_json='{"physical_files": [{"id": "file_0", "modality": "optical"}], "observations": [{"id": "observation_1", "modality": "optical", "image": {"id": "file_0"}}], "relationship": {"type": "single"}, "metadata": {}, "capabilities": {}}',
         physical_files=[],
         api_name="/analyze",
     )

@@ -65,5 +65,5 @@ def test_fifth_file_is_rejected():
 
 
 def test_ambiguous_multiple_files_are_rejected():
-    with pytest.raises(ValueError, match="Manifest JSON"):
+    with pytest.raises(ValueError, match="backend-generated input manifest"):
         build_input_manifest(urls(2))

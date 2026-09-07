@@ -37,13 +37,27 @@ def test_single_image_temporal_request_is_incompatible():
 
 
 def test_single_sar_routes_through_pseudo_rgb():
-    plan = TaskPlanner().plan(AnalysisRequest(user_request="Describe this image", signed_image_urls=[URLS[0]], metadata={"images": [{"id": "image_1", "modality": "sar"}]}))
+    plan = TaskPlanner().plan(AnalysisRequest(
+        user_request="Describe this image",
+        signed_image_urls=URLS[:2],
+        manifest={
+            "physical_files": [{"id": "file_0"}, {"id": "file_1"}],
+            "observations": [{"id": "sar", "modality": "sar", "sar": {"vv": {"id": "file_0"}, "vh": {"id": "file_1"}}}],
+            "relationship": {"type": "single"},
+        },
+    ))
     assert [call.name for call in plan.calls] == ["pseudo_rgb", "geochat"]
 
 
 def test_optical_sar_uses_two_geochat_calls():
-    metadata = {"input_configuration": "optical_sar", "images": [{"id": "image_1", "modality": "optical"}, {"id": "image_2", "modality": "sar"}]}
-    plan = TaskPlanner().plan(AnalysisRequest(user_request="Compare these images", signed_image_urls=URLS[:2], metadata=metadata))
+    plan = TaskPlanner().plan(AnalysisRequest(user_request="Compare these images", signed_image_urls=URLS[:3], manifest={
+        "physical_files": [{"id": "file_0"}, {"id": "file_1"}, {"id": "file_2"}],
+        "observations": [
+            {"id": "optical", "modality": "optical", "image": {"id": "file_0"}},
+            {"id": "sar", "modality": "sar", "sar": {"vv": {"id": "file_1"}, "vh": {"id": "file_2"}}},
+        ],
+        "relationship": {"type": "cross_modal", "co_registered": True},
+    }))
     assert plan.input_configuration == InputConfiguration.OPTICAL_SAR
     assert [call.name for call in plan.calls] == ["geochat", "pseudo_rgb", "geochat"]
 
@@ -51,26 +65,30 @@ def test_optical_sar_uses_two_geochat_calls():
 def test_temporal_pair_uses_m2cd():
     metadata = {"input_configuration": "bi_temporal", "images": [{"id": "image_1", "modality": "optical", "acquisition_time": "2024"}, {"id": "image_2", "modality": "optical", "acquisition_time": "2025"}]}
     plan = TaskPlanner().plan(AnalysisRequest(user_request="What changed?", signed_image_urls=URLS[:2], metadata=metadata))
-    assert [call.name for call in plan.calls] == ["m2cd"]
+    assert [call.name for call in plan.calls] == ["teochat"]
 
 
 def test_four_url_sar_edge_case_is_valid():
-    metadata = {"sar_channels": ["vv_t1", "vh_t1", "vv_t2", "vh_t2"]}
-    plan = TaskPlanner().plan(AnalysisRequest(user_request="What changed?", signed_image_urls=URLS, metadata=metadata))
-    assert plan.compatibility_issue is None
-    assert [call.name for call in plan.calls] == ["m2cd"]
+    plan = TaskPlanner().plan(AnalysisRequest(user_request="What changed?", signed_image_urls=URLS, manifest={
+        "physical_files": [{"id": f"file_{index}"} for index in range(4)],
+        "observations": [
+            {"id": "t1", "modality": "sar", "acquisition_time": "2024-01-01", "sar": {"vv": {"id": "file_0"}, "vh": {"id": "file_1"}}},
+            {"id": "t2", "modality": "sar", "acquisition_time": "2025-01-01", "sar": {"vv": {"id": "file_2"}, "vh": {"id": "file_3"}}},
+        ],
+        "relationship": {"type": "bi_temporal", "spatially_corresponding": True},
+    }))
+    assert plan.input_configuration == InputConfiguration.DUAL_SAR
+    assert plan.compatibility_issue["status"] == "capability_unavailable"
 
 
 def test_three_images_reach_compatibility_validation():
-    plan = TaskPlanner().plan(AnalysisRequest(user_request="Analyze these images", signed_image_urls=URLS[:3]))
-    assert plan.compatibility_issue is not None
-    assert "relationship" in plan.compatibility_issue["reason"]
+    with pytest.raises(ValidationError, match="backend-generated input manifest"):
+        AnalysisRequest(user_request="Analyze these images", signed_image_urls=URLS[:3])
 
 
 def test_ambiguous_pair_is_rejected_without_guessing():
-    plan = TaskPlanner().plan(AnalysisRequest(user_request="Analyze these images", signed_image_urls=URLS[:2]))
-    assert plan.compatibility_issue is not None
-    assert plan.calls == []
+    with pytest.raises(ValidationError, match="backend-generated input manifest"):
+        AnalysisRequest(user_request="Analyze these images", signed_image_urls=URLS[:2])
 
 
 def test_url_contract_rejects_zero_more_than_four_and_non_https():

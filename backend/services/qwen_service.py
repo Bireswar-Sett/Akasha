@@ -8,6 +8,7 @@ from typing import Any, Optional
 from fastapi import HTTPException, status
 
 from config import get_settings
+from services.input_manifest import InputManifestCompatibilityError, build_input_manifest
 
 logger = logging.getLogger("akasha.qwen")
 
@@ -61,20 +62,13 @@ class QwenRequestBuilder:
             )
             for index, (url, item) in enumerate(zip(image_urls, metadata), start=1)
         )
-        if manifest is None and len(images) > 1:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Input Manifest JSON is required when multiple physical files are supplied",
-            )
-
         # The backend supplies the authoritative grouping. References contain
         # stable IDs only; signed URLs remain private to this request.
         if manifest is None:
-            manifest = {
-                "physical_files": [{"id": "file_0"}],
-                "observations": [{"id": "observation_1", "modality": "optical", "image": {"id": "file_0"}}],
-                "relationship": {"type": "single"},
-            }
+            try:
+                manifest = build_input_manifest(metadata)
+            except InputManifestCompatibilityError as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         if not isinstance(manifest, dict) or not isinstance(manifest.get("observations"), list):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Input Manifest JSON must contain observations")
         physical_files = manifest.get("physical_files") or [{"id": f"file_{index}"} for index in range(len(images))]

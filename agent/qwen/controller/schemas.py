@@ -252,17 +252,10 @@ def build_input_manifest(
                 for index, item in enumerate(image_items)
             ]
     if observation_payloads is None:
-        # The four-file SAR shortcut is retained only as an explicit trusted
-        # contract.  No filename or file-count inference occurs here.
-        if payload.get("sar_channels") == ["vv_t1", "vh_t1", "vv_t2", "vh_t2"] and len(refs) == 4:
-            observation_payloads = [
-                {"id": "observation_t1", "modality": "sar", "acquisition_time": "t1", "sar": {"vv": {"physical_index": 0}, "vh": {"physical_index": 1}}},
-                {"id": "observation_t2", "modality": "sar", "acquisition_time": "t2", "sar": {"vv": {"physical_index": 2}, "vh": {"physical_index": 3}}},
-            ]
-        elif len(refs) == 1:
+        if len(refs) == 1:
             observation_payloads = [{"id": "observation_1", "modality": "optical", "image": {"physical_index": 0}}]
         else:
-            raise ValueError("Input Manifest JSON is required when multiple physical files are supplied")
+            raise ValueError("A backend-generated input manifest is required for multiple physical files")
 
     if not isinstance(observation_payloads, list):
         raise ValueError("manifest observations must be a list")

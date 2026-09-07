@@ -38,6 +38,7 @@ def mock_storage():
 
     storage.verify_user_authorization.side_effect = verify_auth
     storage.generate_signed_url.return_value = SAMPLE_SIGNED_URL
+    storage.get_image_metadata.return_value = {"modality": "optical"}
     return storage
 
 
@@ -78,6 +79,12 @@ def test_authorized_image_analysis_success(mock_user, mock_storage, mock_qwen):
             user_message="Analyze this satellite image.",
             image_url=SAMPLE_SIGNED_URL,
             max_new_tokens=256,
+            manifest={
+                "physical_files": [{"id": "file_0", "modality": "optical"}],
+                "observations": [{"id": "observation_1", "modality": "optical", "image": {"id": "file_0"}}],
+                "relationship": {"type": "single"},
+            },
+            image_metadata=[{"modality": "optical"}],
         )
     finally:
         app.dependency_overrides.clear()

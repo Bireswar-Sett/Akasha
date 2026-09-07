@@ -28,7 +28,6 @@ const ChatInterface = ({
   const setQuery = onDraftQueryChange;
   const [isProcessing, setIsProcessing] = useState(false);
   const [previewImage, setPreviewImage] = useState(null);
-  const [manifestJson, setManifestJson] = useState('');
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -46,25 +45,7 @@ const ChatInterface = ({
     }
     if (!textToSend || !textToSend.trim() || isProcessing) return;
 
-    const filesToUpload = selectedFiles ? [...selectedFiles] : [];
-    if (filesToUpload.length > 4) {
-      return;
-    }
-    let inputManifest;
-    if (filesToUpload.length > 1) {
-      if (!manifestJson.trim()) {
-        const botError = { id: (Date.now() + 1).toString(), sender: 'assistant', isError: true, text: 'Multiple physical files require an Input Manifest describing observations and SAR channel roles.', timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) };
-        onUpdateSessionMessages([...(activeSession?.messages || []), botError]);
-        return;
-      }
-      try {
-        inputManifest = JSON.parse(manifestJson);
-      } catch (_) {
-        const botError = { id: (Date.now() + 1).toString(), sender: 'assistant', isError: true, text: 'Input Manifest must be valid JSON.', timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) };
-        onUpdateSessionMessages([...(activeSession?.messages || []), botError]);
-        return;
-      }
-    }
+    const filesToUpload = (selectedFiles ? [...selectedFiles] : []).slice(0, 4);
     if (onClearDraft) onClearDraft();
     setIsProcessing(true);
 
@@ -144,7 +125,6 @@ const ChatInterface = ({
         image_path: uploadedImagePaths[0] || null,
         image_paths: uploadedImagePaths,
         max_new_tokens: 256,
-        ...(inputManifest ? { manifest: inputManifest } : {}),
       };
 
       const response = await axios.post('/api/analyze', requestBody, {
@@ -512,17 +492,6 @@ const ChatInterface = ({
               </div>
             ))}
           </div>
-        )}
-
-        {selectedFiles && selectedFiles.length > 1 && (
-          <textarea
-            className="glass-input"
-            value={manifestJson}
-            onChange={(event) => setManifestJson(event.target.value)}
-            placeholder='Input Manifest JSON, e.g. {"physical_files":[{"id":"file_0","role":"sar_vv"},{"id":"file_1","role":"sar_vh"}],"observations":[{"id":"obs_1","modality":"sar","sar":{"vv":{"id":"file_0"},"vh":{"id":"file_1"}}}],"relationship":{"type":"single"}}'
-            rows={5}
-            style={{ width: '100%', marginBottom: '8px', resize: 'vertical', fontFamily: 'monospace', fontSize: '0.75rem' }}
-          />
         )}
 
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>

@@ -70,7 +70,7 @@ def test_manifest_counts_two_sar_observations_as_four_files():
     manifest = InputManifest(observations=[
         sar_observation("sar_t1", URLS[0], URLS[1], "2024-01-01"),
         sar_observation("sar_t2", URLS[2], URLS[3], "2025-01-01"),
-    ], relationship=RelationshipMetadata(relationship="temporal", spatially_corresponding=True))
+    ], relationship=RelationshipMetadata(relationship="temporal", spatially_corresponding=True), metadata={"capabilities": {"m2cd_sar_sar": True}})
     request = request_for(manifest, "What changed between the dates?")
 
     plan = TaskPlanner().plan(request)
@@ -199,7 +199,7 @@ def test_m2cd_unavailable_does_not_claim_change_detection():
     manifest = InputManifest(observations=[
         sar_observation("t1", URLS[0], URLS[1], "2024-01-01"),
         sar_observation("t2", URLS[2], URLS[3], "2025-01-01"),
-    ], relationship=RelationshipMetadata(relationship="temporal", spatially_corresponding=True))
+    ], relationship=RelationshipMetadata(relationship="temporal", spatially_corresponding=True), metadata={"capabilities": {"m2cd_sar_sar": True}})
     result = QwenController(FakeQwen(), FailingExecutor("m2cd")).run_request(request_for(manifest, "What changed after the flood?"))
 
     assert result["execution"][0]["tool"] == "m2cd"

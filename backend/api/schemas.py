@@ -38,8 +38,8 @@ class AnalyzeRequest(BaseModel):
         description="Optional ordered Firebase Storage paths for multi-image Qwen analysis",
     )
 
-    # Trusted grouping metadata. References use stable file_0..file_3 IDs;
-    # filenames are never used for grouping.
+    # Deprecated compatibility field. Production grouping is always derived
+    # from trusted Firebase Storage metadata, never from browser JSON.
     manifest: Dict[str, Any] | None = None
 
     @model_validator(mode="after")

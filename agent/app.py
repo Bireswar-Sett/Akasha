@@ -62,7 +62,9 @@ demo = gr.Interface(
         gr.Textbox(label="Signed Image URL 2"),
         gr.Textbox(label="Signed Image URL 3"),
         gr.Textbox(label="Signed Image URL 4"),
-        gr.Textbox(label="Input Manifest JSON (required for multiple physical files)", lines=8),
+        # Backend transport only: retained as a hidden API parameter so the
+        # production UI never asks a user to construct JSON.
+        gr.Textbox(visible=False),
         gr.File(label="Direct physical files (up to 4)", file_count="multiple", type="filepath"),
     ],
     outputs=gr.Code(label="Qwen Response", language="json"),
