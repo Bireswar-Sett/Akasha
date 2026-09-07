@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+
 import {
   Send,
   Paperclip,
@@ -8,13 +9,35 @@ import {
   Image as ImageIcon,
   ArrowUpRight
 } from 'lucide-react';
+
 import axios from 'axios';
+
 import logoSrc from '../assets/logo.png';
-import { auth, storage, db, isDemoMode } from '../firebaseClient';
-import { ref, uploadBytes } from 'firebase/storage';
-import { collection, addDoc } from 'firebase/firestore';
+
+import {
+  auth,
+  storage,
+  db,
+  isDemoMode
+} from '../firebaseClient';
+
+import {
+  ref,
+  uploadBytes
+} from 'firebase/storage';
+
+import {
+  collection,
+  addDoc
+} from 'firebase/firestore';
+
+
+/* ============================================================================
+ * Upload limits / supported source formats
+ * ========================================================================== */
 
 const MAX_UPLOAD_FILES = 4;
+
 const SUPPORTED_EXTENSIONS = new Set([
   '.tif',
   '.tiff',
@@ -23,27 +46,63 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.jpeg'
 ]);
 
-/* -------------------------------------------------------------------------- */
-/* File / remote-sensing metadata helpers                                     */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * Derived-artifact protection
+ * ========================================================================== */
+
+const DERIVED_ARTIFACT_PATTERNS = [
+  /(^|[\-_])pseudo[\-_]?rgb([\-_]|$)/i,
+  /(^|[\-_])preview([\-_]|$)/i,
+  /(^|[\-_])thumbnail([\-_]|$)/i,
+  /(^|[\-_])derived([\-_]|$)/i
+];
+
+
+const isDerivedArtifact = (filename = '') => {
+  return DERIVED_ARTIFACT_PATTERNS.some(
+    pattern => pattern.test(filename)
+  );
+};
+
+
+/* ============================================================================
+ * File helpers
+ * ========================================================================== */
 
 const getExtension = (filename = '') => {
-  const match = filename.toLowerCase().match(/(\.[a-z0-9]+)$/);
+  const match = filename
+    .toLowerCase()
+    .match(/(\.[a-z0-9]+)$/);
+
   return match ? match[1] : '';
 };
 
+
 const getBaseName = (filename = '') => {
   const extension = getExtension(filename);
+
   return extension
     ? filename.slice(0, -extension.length)
     : filename;
 };
 
-const sanitizeIdPart = (value = '') =>
-  value
+
+const sanitizeIdPart = (value = '') => {
+  return value
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
+};
+
+
+/* ============================================================================
+ * Remote-sensing filename hints
+ *
+ * These are CLIENT-SIDE HINTS only.
+ *
+ * The backend remains authoritative and must validate trusted metadata.
+ * ========================================================================== */
 
 const inferModality = (filename = '') => {
   const lower = filename.toLowerCase();
@@ -56,9 +115,7 @@ const inferModality = (filename = '') => {
     lower.includes('gamma_0') ||
     lower.includes('sigma0') ||
     lower.includes('sigma_0') ||
-    lower.includes('_vv_') ||
-    lower.includes('_vh_') ||
-    /(^|[_-])(vv|vh)(?=[_.-]|$)/i.test(lower);
+    /(^|[\-_])(vv|vh)(?=[_.-]|$)/i.test(lower);
 
   if (looksSar) {
     return 'sar';
@@ -79,43 +136,58 @@ const inferModality = (filename = '') => {
     return 'optical';
   }
 
-  // For common image formats, defaulting to optical is reasonable.
-  // For TIFF/GeoTIFF, do not silently misclassify an unknown scientific raster.
-  const extension = getExtension(filename);
-
-  if (extension === '.png' || extension === '.jpg' || extension === '.jpeg') {
+  /*
+   * Standard consumer image formats can safely default to optical
+   * because they are already intended as visual imagery.
+   *
+   * Unknown TIFF/GeoTIFF must NOT silently become optical.
+   */
+  if (
+    getExtension(filename) === '.png' ||
+    getExtension(filename) === '.jpg' ||
+    getExtension(filename) === '.jpeg'
+  ) {
     return 'optical';
   }
 
   return null;
 };
 
+
 const inferPolarization = (filename = '') => {
   const lower = filename.toLowerCase();
 
-  // Find all standalone VV/VH tokens and use the last one.
-  // This handles names such as:
-  // ...VV_VH_VH_decibel_gamma0.tiff
-  // ...VV_VH_VV_decibel_gamma0.tiff
   const matches = [
-    ...lower.matchAll(/(?:^|[_-])(vv|vh)(?=[_.-]|$)/gi)
+    ...lower.matchAll(
+      /(?:^|[\-_])(vv|vh)(?=[_.-]|$)/gi
+    )
   ];
 
   if (matches.length === 0) {
     return null;
   }
 
+  /*
+   * Sentinel-1 filenames can contain strings such as:
+
+       ...VV_VH_VH_decibel_gamma0.tiff
+       ...VV_VH_VV_decibel_gamma0.tiff
+
+   * The final standalone VV/VH token is the actual channel identifier
+   * for the source file.
+   */
   return matches[matches.length - 1][1].toUpperCase();
 };
 
+
 const inferAcquisitionTime = (filename = '') => {
   /*
-   * Supports common filename fragments such as:
-   *
-   * 2024-01-04-00_00_2024-01-04-23_59_...
-   * 2026-08-25-00_00_2026-08-25-23_59_...
-   *
-   * The first YYYY-MM-DD occurrence is used as acquisition date.
+   * Handles names such as:
+
+       2024-01-04-00_00_2024-01-04-23_59_...
+       2026-08-25-00_00_2026-08-25-23_59_...
+
+   * The first YYYY-MM-DD occurrence is used.
    */
   const match = filename.match(
     /(20\d{2})[-_](\d{2})[-_](\d{2})/
@@ -130,38 +202,64 @@ const inferAcquisitionTime = (filename = '') => {
   return `${year}-${month}-${day}`;
 };
 
-const inferObservationSeed = (filename = '') => {
-  const modality = inferModality(filename);
-  const date = inferAcquisitionTime(filename);
-  const polarization = inferPolarization(filename);
 
-  if (modality === 'sar') {
-    return [
-      'sar',
-      date || 'unknown_date',
-      'same_acquisition',
-      sanitizeIdPart(
-        getBaseName(filename)
-          .replace(
-            /(?:^|[_-])(?:vv|vh)(?=[_.-]|$)/gi,
-            ''
-          )
-      )
-    ].join('_');
-  }
+/* ============================================================================
+ * SAR acquisition grouping
+ * ========================================================================== */
+
+/*
+ * Remove ALL polarization tokens from a SAR filename so VV and VH files
+ * belonging to one acquisition produce the same grouping seed.
+ *
+ * Example:
+ *
+ *   foo_VV_VH_VV_decibel_gamma0
+ *   foo_VV_VH_VH_decibel_gamma0
+ *
+ * both become approximately:
+ *
+ *   foo_decibel_gamma0
+ */
+const removePolarizationTokens = (filename = '') => {
+  return filename
+    .replace(
+      /(?:^|[\-_])(vv|vh)(?=[_.-]|$)/gi,
+      '_'
+    )
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+};
+
+
+const buildSarObservationSeed = (
+  filename,
+  acquisitionTime
+) => {
+  const baseName = getBaseName(filename);
+
+  const sourcePart = sanitizeIdPart(
+    removePolarizationTokens(baseName)
+  );
 
   return [
-    modality || 'unknown',
-    date || 'unknown_date',
-    sanitizeIdPart(getBaseName(filename))
+    acquisitionTime || 'unknown_date',
+    sourcePart || 'unknown_source'
   ].join('_');
 };
 
-const buildUploadDescriptors = (files) => {
+
+/* ============================================================================
+ * Upload descriptors
+ * ========================================================================== */
+
+const buildUploadDescriptors = files => {
   const sarGroups = new Map();
 
-  return files.map((file, index) => {
-    const filename = file.name || `image_${index + 1}.tiff`;
+  const descriptors = files.map((file, index) => {
+    const filename =
+      file?.name ||
+      `image_${index + 1}`;
+
     const extension = getExtension(filename);
 
     if (!SUPPORTED_EXTENSIONS.has(extension)) {
@@ -170,22 +268,35 @@ const buildUploadDescriptors = (files) => {
       );
     }
 
+    if (isDerivedArtifact(filename)) {
+      throw new Error(
+        `"${filename}" appears to be a derived preview/artifact, ` +
+        `not source satellite imagery. Please upload the original ` +
+        `optical image or original SAR VV/VH files.`
+      );
+    }
+
     const modality = inferModality(filename);
 
     if (!modality) {
       throw new Error(
         `Could not determine whether "${filename}" is optical or SAR. ` +
-        `Use a recognizable remote-sensing filename or provide imagery metadata.`
+        `Please use a recognizable remote-sensing filename.`
       );
     }
 
-    const acquisitionTime = inferAcquisitionTime(filename);
+    const acquisitionTime =
+      inferAcquisitionTime(filename);
+
     const polarization =
       modality === 'sar'
         ? inferPolarization(filename)
         : null;
 
-    if (modality === 'sar' && !polarization) {
+    if (
+      modality === 'sar' &&
+      !polarization
+    ) {
       throw new Error(
         `Could not determine VV/VH polarization from "${filename}". ` +
         `A SAR observation requires both VV and VH files.`
@@ -195,16 +306,11 @@ const buildUploadDescriptors = (files) => {
     let observationId;
 
     if (modality === 'sar') {
-      const sarSeed = [
-        acquisitionTime || 'unknown_date',
-        sanitizeIdPart(
-          filename
-            .replace(
-              /(?:^|[_-])(?:vv|vh)(?=[_.-]|$)/gi,
-              ''
-            )
-        )
-      ].join('_');
+      const sarSeed =
+        buildSarObservationSeed(
+          filename,
+          acquisitionTime
+        );
 
       if (!sarGroups.has(sarSeed)) {
         sarGroups.set(
@@ -213,10 +319,13 @@ const buildUploadDescriptors = (files) => {
         );
       }
 
-      observationId = sarGroups.get(sarSeed);
+      observationId =
+        sarGroups.get(sarSeed);
     } else {
       observationId =
-        `obs_${inferObservationSeed(filename)}_${index}`;
+        `obs_optical_${sanitizeIdPart(
+          acquisitionTime || `unknown_${index + 1}`
+        )}_${index + 1}`;
     }
 
     return {
@@ -229,80 +338,331 @@ const buildUploadDescriptors = (files) => {
       observationId
     };
   });
+
+  return descriptors;
 };
 
-const validateUploadCombination = (descriptors) => {
-  if (descriptors.length === 0) {
-    return;
+
+/* ============================================================================
+ * Logical upload validation
+ * ========================================================================== */
+
+const validateUploadCombination = descriptors => {
+  if (!descriptors.length) {
+    throw new Error(
+      'At least one satellite image is required.'
+    );
   }
 
-  const sarDescriptors = descriptors.filter(
-    item => item.modality === 'sar'
-  );
+  if (descriptors.length > MAX_UPLOAD_FILES) {
+    throw new Error(
+      `You can upload at most ${MAX_UPLOAD_FILES} physical files.`
+    );
+  }
 
-  const opticalDescriptors = descriptors.filter(
-    item => item.modality === 'optical'
-  );
+  const sarDescriptors =
+    descriptors.filter(
+      item => item.modality === 'sar'
+    );
 
-  // A logical SAR observation requires exactly one VV + one VH.
+  const opticalDescriptors =
+    descriptors.filter(
+      item =>
+        item.modality === 'optical'
+    );
+
+  /* ------------------------------------------------------------------------
+   * SAR logical grouping
+   * ---------------------------------------------------------------------- */
+
   const sarGroups = new Map();
 
   for (const item of sarDescriptors) {
     if (!sarGroups.has(item.observationId)) {
-      sarGroups.set(item.observationId, []);
+      sarGroups.set(
+        item.observationId,
+        []
+      );
     }
 
-    sarGroups.get(item.observationId).push(item);
+    sarGroups
+      .get(item.observationId)
+      .push(item);
   }
 
-  for (const [observationId, group] of sarGroups.entries()) {
-    const polarizations = group.map(
-      item => item.polarization
-    );
+  for (
+    const [observationId, group]
+    of sarGroups.entries()
+  ) {
+    const vvCount =
+      group.filter(
+        item => item.polarization === 'VV'
+      ).length;
 
-    const vvCount = polarizations.filter(p => p === 'VV').length;
-    const vhCount = polarizations.filter(p => p === 'VH').length;
+    const vhCount =
+      group.filter(
+        item => item.polarization === 'VH'
+      ).length;
 
-    if (vvCount !== 1 || vhCount !== 1) {
+    if (
+      vvCount !== 1 ||
+      vhCount !== 1
+    ) {
       throw new Error(
-        `SAR observation "${observationId}" must contain exactly one VV file ` +
-        `and one VH file.`
+        `SAR observation "${observationId}" must contain exactly ` +
+        `one VV file and one VH file.`
       );
     }
   }
 
-  /*
-   * Physical upload count is capped at four.
+  /* ------------------------------------------------------------------------
+   * Valid physical configurations
    *
-   * Examples:
-   *   optical                     = 1 file
-   *   SAR                         = 2 files
-   *   optical + SAR               = 3 files
-   *   SAR + SAR                   = 4 files
-   *   optical + optical           = 2 files
-   */
-  if (descriptors.length > MAX_UPLOAD_FILES) {
+   * 1  optical
+   * 2  optical
+   * 2  SAR
+   * 3  optical + SAR(VV,VH)
+   * 4  SAR(T1) + SAR(T2)
+   * ---------------------------------------------------------------------- */
+
+  const valid =
+    descriptors.length === 1 ||
+    (
+      descriptors.length === 2 &&
+      (
+        sarGroups.size === 1 ||
+        opticalDescriptors.length === 2
+      )
+    ) ||
+    (
+      descriptors.length === 3 &&
+      opticalDescriptors.length === 1 &&
+      sarGroups.size === 1
+    ) ||
+    (
+      descriptors.length === 4 &&
+      sarGroups.size === 2 &&
+      opticalDescriptors.length === 0
+    );
+
+  if (!valid) {
     throw new Error(
-      `You can upload at most ${MAX_UPLOAD_FILES} files.`
+      'The selected imagery cannot be represented as supported logical ' +
+      'observations. Supported combinations are: single optical, single SAR ' +
+      '(VV+VH), two optical observations, optical+SAR, or two SAR observations.'
     );
   }
 
-  // This is primarily a sanity check. The backend remains authoritative.
-  if (sarDescriptors.length > 0 && opticalDescriptors.length > 2) {
-    throw new Error(
-      'The selected imagery exceeds the supported physical-file configuration.'
-    );
+  /*
+   * A single SAR observation = exactly two physical files.
+   */
+  for (
+    const [, group]
+    of sarGroups.entries()
+  ) {
+    if (group.length !== 2) {
+      throw new Error(
+        'Each SAR acquisition must contain exactly one VV and one VH file.'
+      );
+    }
   }
 
   return {
     sarCount: sarGroups.size,
-    opticalCount: opticalDescriptors.length
+    opticalCount: opticalDescriptors.length,
+    logicalObservationCount:
+      sarGroups.size +
+      opticalDescriptors.length
   };
 };
 
-/* -------------------------------------------------------------------------- */
-/* Component                                                                  */
-/* -------------------------------------------------------------------------- */
+
+/* ============================================================================
+ * Relationship inference
+ *
+ * This is only a request-side grouping hint.
+ * The backend remains authoritative.
+ * ========================================================================== */
+
+const buildRelationshipHint = descriptors => {
+  const sar = descriptors.filter(
+    item => item.modality === 'sar'
+  );
+
+  const optical = descriptors.filter(
+    item => item.modality === 'optical'
+  );
+
+  const sarObservationIds = [
+    ...new Set(
+      sar.map(item => item.observationId)
+    )
+  ];
+
+  /* Single optical */
+  if (
+    descriptors.length === 1 &&
+    optical.length === 1
+  ) {
+    return {
+      type: 'single'
+    };
+  }
+
+  /* Single SAR acquisition */
+  if (
+    descriptors.length === 2 &&
+    sarObservationIds.length === 1
+  ) {
+    return {
+      type: 'single'
+    };
+  }
+
+  /* Two optical observations */
+  if (
+    descriptors.length === 2 &&
+    optical.length === 2
+  ) {
+    const timestamps =
+      optical
+        .map(item => item.acquisitionTime)
+        .filter(Boolean);
+
+    return {
+      type:
+        timestamps.length === 2
+          ? 'bi_temporal'
+          : 'temporal'
+    };
+  }
+
+  /* Optical + SAR */
+  if (
+    descriptors.length === 3 &&
+    optical.length === 1 &&
+    sarObservationIds.length === 1
+  ) {
+    return {
+      type: 'cross_modal'
+    };
+  }
+
+  /* Two SAR observations */
+  if (
+    descriptors.length === 4 &&
+    sarObservationIds.length === 2
+  ) {
+    return {
+      type: 'bi_temporal'
+    };
+  }
+
+  return {
+    type: 'single'
+  };
+};
+
+
+/* ============================================================================
+ * Build backend-facing manifest hint
+ * ========================================================================== */
+
+const buildClientManifest = descriptors => {
+  const physicalFiles =
+    descriptors.map(
+      (item, index) => ({
+        id: `file_${index}`,
+        filename: item.filename,
+        format: item.extension
+          .replace('.', '')
+          .toLowerCase(),
+        modality: item.modality,
+        polarization:
+          item.polarization || null,
+        timestamp:
+          item.acquisitionTime || null,
+        observation_id:
+          item.observationId,
+        role:
+          item.modality === 'sar'
+            ? 'source_sar_channel'
+            : 'source_image'
+      })
+    );
+
+  const observationMap = new Map();
+
+  for (
+    let index = 0;
+    index < descriptors.length;
+    index += 1
+  ) {
+    const descriptor =
+      descriptors[index];
+
+    if (
+      !observationMap.has(
+        descriptor.observationId
+      )
+    ) {
+      observationMap.set(
+        descriptor.observationId,
+        {
+          id: descriptor.observationId,
+          modality: descriptor.modality,
+          acquisition_time:
+            descriptor.acquisitionTime ||
+            null,
+          metadata: {}
+        }
+      );
+    }
+
+    const observation =
+      observationMap.get(
+        descriptor.observationId
+      );
+
+    if (descriptor.modality === 'sar') {
+      if (!observation.sar) {
+        observation.sar = {};
+      }
+
+      observation.sar[
+        descriptor.polarization.toLowerCase()
+      ] = {
+        physical_index: index,
+        id: `file_${index}`
+      };
+    } else {
+      observation.image = {
+        physical_index: index,
+        id: `file_${index}`
+      };
+    }
+  }
+
+  return {
+    physical_files,
+    observations: [
+      ...observationMap.values()
+    ],
+    relationship:
+      buildRelationshipHint(
+        descriptors
+      ),
+    metadata: {
+      source: 'akasha_frontend',
+      version: '3'
+    }
+  };
+};
+
+
+/* ============================================================================
+ * Component
+ * ========================================================================== */
 
 const ChatInterface = ({
   selectedFiles,
@@ -314,12 +674,25 @@ const ChatInterface = ({
   onDraftQueryChange,
   onClearDraft
 }) => {
-  const query = draftQuery || '';
-  const setQuery = onDraftQueryChange;
+  const query =
+    draftQuery || '';
 
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [previewImage, setPreviewImage] = useState(null);
-  const messagesEndRef = useRef(null);
+  const setQuery =
+    onDraftQueryChange;
+
+  const [
+    isProcessing,
+    setIsProcessing
+  ] = useState(false);
+
+  const [
+    previewImage,
+    setPreviewImage
+  ] = useState(null);
+
+  const messagesEndRef =
+    useRef(null);
+
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({
@@ -327,23 +700,33 @@ const ChatInterface = ({
     });
   };
 
+
   useEffect(() => {
     scrollToBottom();
-  }, [activeSession?.messages, isProcessing]);
+  }, [
+    activeSession?.messages,
+    isProcessing
+  ]);
 
-  /* ------------------------------------------------------------------------ */
-  /* Send                                                                     */
-  /* ------------------------------------------------------------------------ */
 
-  const handleSend = async (overrideQuery = null) => {
-    let textToSend = overrideQuery || query;
+  /* ========================================================================
+   * Send
+   * ====================================================================== */
+
+  const handleSend = async (
+    overrideQuery = null
+  ) => {
+    let textToSend =
+      overrideQuery || query;
 
     if (
-      (!textToSend || !textToSend.trim()) &&
+      (!textToSend ||
+        !textToSend.trim()) &&
       selectedFiles &&
       selectedFiles.length > 0
     ) {
-      textToSend = 'Analyze attached satellite imagery.';
+      textToSend =
+        'Analyze attached satellite imagery.';
     }
 
     if (
@@ -358,50 +741,82 @@ const ChatInterface = ({
       selectedFiles
         ? [...selectedFiles]
         : []
-    ).slice(0, MAX_UPLOAD_FILES);
+    ).slice(
+      0,
+      MAX_UPLOAD_FILES
+    );
 
-    /* ---------------------------------------------------------------------- */
-    /* Build logical observation descriptors BEFORE upload                    */
-    /* ---------------------------------------------------------------------- */
+    /* ----------------------------------------------------------------------
+     * Build logical descriptors before touching Storage.
+     * -------------------------------------------------------------------- */
 
     let descriptors = [];
 
     try {
-      descriptors = buildUploadDescriptors(filesToUpload);
-      validateUploadCombination(descriptors);
+      descriptors =
+        buildUploadDescriptors(
+          filesToUpload
+        );
+
+      validateUploadCombination(
+        descriptors
+      );
     } catch (validationError) {
       const botError = {
-        id: (Date.now() + 1).toString(),
-        sender: 'assistant',
-        isError: true,
-        text: validationError.message,
-        timestamp: new Date().toLocaleTimeString(
-          [],
-          {
-            hour: '2-digit',
-            minute: '2-digit'
-          }
-        )
-      };
+        id: (
+          Date.now() + 1
+        ).toString(),
 
-      onUpdateSessionMessages([
-        ...(activeSession?.messages || []),
-        {
-          id: Date.now().toString(),
-          sender: 'user',
-          text: textToSend,
-          attachments: filesToUpload.map(file => ({
-            name: file.name,
-            url: URL.createObjectURL(file)
-          })),
-          timestamp: new Date().toLocaleTimeString(
+        sender: 'assistant',
+
+        isError: true,
+
+        text:
+          validationError?.message ||
+          'Unsupported imagery combination.',
+
+        timestamp:
+          new Date().toLocaleTimeString(
             [],
             {
               hour: '2-digit',
               minute: '2-digit'
             }
           )
+      };
+
+      onUpdateSessionMessages([
+        ...(activeSession?.messages || []),
+
+        {
+          id:
+            Date.now().toString(),
+
+          sender: 'user',
+
+          text: textToSend,
+
+          attachments:
+            filesToUpload.map(
+              file => ({
+                name: file.name,
+                url:
+                  URL.createObjectURL(
+                    file
+                  )
+              })
+            ),
+
+          timestamp:
+            new Date().toLocaleTimeString(
+              [],
+              {
+                hour: '2-digit',
+                minute: '2-digit'
+              }
+            )
         },
+
         botError
       ]);
 
@@ -414,41 +829,61 @@ const ChatInterface = ({
 
     setIsProcessing(true);
 
-    /* ---------------------------------------------------------------------- */
-    /* Step 1: User message                                                   */
-    /* ---------------------------------------------------------------------- */
+
+    /* ========================================================================
+     * User message
+     * ====================================================================== */
 
     const userMessage = {
-      id: Date.now().toString(),
+      id:
+        Date.now().toString(),
+
       sender: 'user',
+
       text: textToSend,
+
       attachments: [],
-      timestamp: new Date().toLocaleTimeString(
-        [],
-        {
-          hour: '2-digit',
-          minute: '2-digit'
-        }
-      )
+
+      timestamp:
+        new Date().toLocaleTimeString(
+          [],
+          {
+            hour: '2-digit',
+            minute: '2-digit'
+          }
+        )
     };
+
 
     const messagesWithUser = [
       ...(activeSession?.messages || []),
       userMessage
     ];
 
-    onUpdateSessionMessages(messagesWithUser);
+    onUpdateSessionMessages(
+      messagesWithUser
+    );
 
-    /* ---------------------------------------------------------------------- */
-    /* Step 2: Upload imagery with trusted remote-sensing metadata            */
-    /* ---------------------------------------------------------------------- */
+
+    /* ========================================================================
+     * Upload imagery
+     * ====================================================================== */
 
     const attachmentUrls = [];
+
     const uploadedImagePaths = [];
+
     const uploadedImageMetadata = [];
 
     try {
-      for (const descriptor of descriptors) {
+      for (
+        let index = 0;
+        index < descriptors.length;
+        index += 1
+      ) {
+        const descriptor =
+          descriptors[index];
+
         const {
           file,
           filename,
@@ -460,9 +895,13 @@ const ChatInterface = ({
         } = descriptor;
 
         let localPreviewUrl = '';
+
         let storagePath = '';
 
-        if (user && !isDemoMode) {
+        if (
+          user &&
+          !isDemoMode
+        ) {
           const uid =
             user.uid ||
             user.id ||
@@ -474,39 +913,61 @@ const ChatInterface = ({
             );
           }
 
-          const timestamp = Date.now();
+          const timestamp =
+            Date.now();
 
           storagePath =
-            `users/${uid}/imagery/${timestamp}_${file.name}`;
+            `users/${uid}/imagery/` +
+            `${timestamp}_${file.name}`;
 
-          const storageRef = ref(
-            storage,
-            storagePath
-          );
+          const storageRef =
+            ref(
+              storage,
+              storagePath
+            );
+
 
           /*
-           * IMPORTANT:
-           * Firebase Storage customMetadata is what the backend can retrieve
-           * as trusted metadata later when building the input manifest.
+           * Firebase custom metadata.
+           *
+           * These are intended to let the backend reconstruct the logical
+           * observations from the physical files.
+           *
+           * The backend MUST still validate these values and should never
+           * trust arbitrary request-body metadata over Storage metadata.
            */
           const customMetadata = {
-            original_filename: filename,
-            file_format: extension.replace('.', '').toLowerCase(),
+            original_filename:
+              filename,
+
+            file_format:
+              extension
+                .replace('.', '')
+                .toLowerCase(),
+
             modality,
+
             acquisition_time:
               acquisitionTime || '',
-            observation_id: observationId,
+
+            observation_id:
+              observationId,
+
             polarization:
               polarization || '',
+
             imagery_role:
               modality === 'sar'
-                ? 'sar_channel'
-                : 'single_image',
+                ? 'source_sar_channel'
+                : 'source_image',
+
             uploaded_by:
               'akasha_frontend',
+
             metadata_version:
-              '2'
+              '3'
           };
+
 
           await uploadBytes(
             storageRef,
@@ -516,6 +977,11 @@ const ChatInterface = ({
             }
           );
 
+
+          /*
+           * Firestore metadata is useful for displaying the user's imagery
+           * library, but is NOT the security authority for analysis.
+           */
           await addDoc(
             collection(
               db,
@@ -525,76 +991,124 @@ const ChatInterface = ({
             ),
             {
               name: filename,
+
               path: storagePath,
-              uploadedAt: Date.now(),
+
+              uploadedAt:
+                Date.now(),
+
               size: file.size,
 
-              // Store the same normalized metadata in Firestore.
               modality,
+
               polarization:
                 polarization || null,
+
               acquisitionTime:
                 acquisitionTime || null,
+
               observationId,
-              format: extension
-                .replace('.', '')
-                .toLowerCase()
+
+              format:
+                extension
+                  .replace('.', '')
+                  .toLowerCase(),
+
+              metadataVersion:
+                '3'
             }
           );
 
-          uploadedImagePaths.push(storagePath);
+
+          uploadedImagePaths.push(
+            storagePath
+          );
+
 
           uploadedImageMetadata.push({
             path: storagePath,
+
             filename,
-            format: extension
-              .replace('.', '')
-              .toLowerCase(),
+
+            format:
+              extension
+                .replace('.', '')
+                .toLowerCase(),
+
             modality,
+
             polarization:
               polarization || null,
+
             acquisition_time:
               acquisitionTime || null,
-            observation_id: observationId
+
+            observation_id:
+              observationId,
+
+            physical_index:
+              index
           });
 
+
           localPreviewUrl =
-            URL.createObjectURL(file);
+            URL.createObjectURL(
+              file
+            );
+
         } else {
           /*
-           * Demo mode remains local-only.
-           * The backend analysis call below is still blocked unless the
-           * application is configured for demo analysis.
+           * Demo/local mode.
            */
           localPreviewUrl =
-            URL.createObjectURL(file);
+            URL.createObjectURL(
+              file
+            );
 
           uploadedImageMetadata.push({
             path: null,
+
             filename,
-            format: extension
-              .replace('.', '')
-              .toLowerCase(),
+
+            format:
+              extension
+                .replace('.', '')
+                .toLowerCase(),
+
             modality,
+
             polarization:
               polarization || null,
+
             acquisition_time:
               acquisitionTime || null,
-            observation_id: observationId
+
+            observation_id:
+              observationId,
+
+            physical_index:
+              index
           });
         }
 
+
         attachmentUrls.push({
           name: filename,
+
           url: localPreviewUrl,
+
           modality,
+
           polarization:
             polarization || null,
+
           acquisitionTime:
             acquisitionTime || null,
+
           observationId
         });
       }
+
     } catch (uploadErr) {
       console.error(
         'Storage upload error:',
@@ -607,65 +1121,89 @@ const ChatInterface = ({
         )
           ? 'Storage permission denied. Please check your Firebase Storage rules.'
           : (
-              uploadErr?.message ||
-              'Image upload failed. Please try again.'
-            );
+            uploadErr?.message ||
+            'Image upload failed. Please try again.'
+          );
 
       const userMessageWithAttachments = {
         ...userMessage,
-        attachments: attachmentUrls
+
+        attachments:
+          attachmentUrls
       };
 
       const updatedMessages =
-        messagesWithUser.map(m =>
-          m.id === userMessage.id
-            ? userMessageWithAttachments
-            : m
+        messagesWithUser.map(
+          message =>
+            message.id ===
+            userMessage.id
+              ? userMessageWithAttachments
+              : message
         );
 
       onUpdateSessionMessages([
         ...updatedMessages,
+
         {
-          id: (Date.now() + 1).toString(),
+          id:
+            (
+              Date.now() + 1
+            ).toString(),
+
           sender: 'assistant',
+
           isError: true,
-          text: uploadErrorMessage,
-          timestamp: new Date().toLocaleTimeString(
-            [],
-            {
-              hour: '2-digit',
-              minute: '2-digit'
-            }
-          )
+
+          text:
+            uploadErrorMessage,
+
+          timestamp:
+            new Date().toLocaleTimeString(
+              [],
+              {
+                hour: '2-digit',
+                minute: '2-digit'
+              }
+            )
         }
       ]);
 
       setIsProcessing(false);
+
       return;
     }
 
+
     const userMessageWithAttachments = {
       ...userMessage,
-      attachments: attachmentUrls
+
+      attachments:
+        attachmentUrls
     };
 
     const updatedMessages =
-      messagesWithUser.map(m =>
-        m.id === userMessage.id
-          ? userMessageWithAttachments
-          : m
+      messagesWithUser.map(
+        message =>
+          message.id ===
+          userMessage.id
+            ? userMessageWithAttachments
+            : message
       );
 
     onUpdateSessionMessages(
       updatedMessages
     );
 
-    /* ---------------------------------------------------------------------- */
-    /* Step 3: Backend analysis request                                       */
-    /* ---------------------------------------------------------------------- */
+
+    /* ========================================================================
+     * Backend analysis request
+     * ====================================================================== */
 
     try {
-      if (!user && !isDemoMode) {
+      if (
+        !user &&
+        !isDemoMode
+      ) {
         throw new Error(
           'You must be signed in to analyze imagery.'
         );
@@ -687,59 +1225,94 @@ const ChatInterface = ({
         );
       }
 
+
       /*
-       * `image_paths` remains the physical-file transport layer.
+       * Build the complete logical manifest.
        *
-       * `image_metadata` is the normalized description of those physical files.
-       * The backend must still verify metadata from Firebase Storage instead
-       * of trusting this request body.
+       * Important:
+       * image_paths remain the physical transport layer.
+       * client_manifest describes logical observations.
        */
+      const clientManifest =
+        buildClientManifest(
+          descriptors
+        );
+
+
       const requestBody = {
         query: textToSend,
 
-        // Backward-compatible first physical file.
+        /*
+         * Backward-compatible first physical file.
+         */
         image_path:
-          uploadedImagePaths[0] || null,
+          uploadedImagePaths[0] ||
+          null,
 
-        // All physical uploaded files, max four.
+        /*
+         * Physical transport layer.
+         */
         image_paths:
           uploadedImagePaths,
 
-        // Explicit client-side observation hints.
+        /*
+         * Normalized physical metadata hints.
+         */
         image_metadata:
           uploadedImageMetadata,
 
-        max_new_tokens: 256
+        /*
+         * Explicit logical observation structure.
+         */
+        input_manifest:
+          clientManifest,
+
+        max_new_tokens:
+          256
       };
 
-      const response = await axios.post(
-        '/api/analyze',
-        requestBody,
-        {
-          timeout: 30000,
-          headers: {
-            Authorization:
-              `Bearer ${idToken}`
-          }
-        }
-      );
 
-      const data = response.data;
+      const response =
+        await axios.post(
+          '/api/analyze',
+          requestBody,
+          {
+            timeout: 30000,
+
+            headers: {
+              Authorization:
+                `Bearer ${idToken}`
+            }
+          }
+        );
+
+
+      const data =
+        response.data;
+
 
       const botMessage = {
-        id: (Date.now() + 1).toString(),
+        id:
+          (
+            Date.now() + 1
+          ).toString(),
+
         sender: 'assistant',
+
         text:
           data.answer ||
           'Analysis completed without a textual response.',
-        timestamp: new Date().toLocaleTimeString(
-          [],
-          {
-            hour: '2-digit',
-            minute: '2-digit'
-          }
-        )
+
+        timestamp:
+          new Date().toLocaleTimeString(
+            [],
+            {
+              hour: '2-digit',
+              minute: '2-digit'
+            }
+          )
       };
+
 
       onUpdateSessionMessages([
         ...updatedMessages,
@@ -765,22 +1338,34 @@ const ChatInterface = ({
 
       let errorMessage;
 
+
       if (
-        detail.includes('ZeroGPU') ||
-        detail.includes('runs limit') ||
-        detail.includes('daily AI analysis limit')
+        detail.includes(
+          'ZeroGPU'
+        ) ||
+        detail.includes(
+          'runs limit'
+        ) ||
+        detail.includes(
+          'daily AI analysis limit'
+        )
       ) {
         errorMessage =
-          'Your daily AI analysis limit has been reached. Please try again later.';
+          'The AI specialist quota is currently unavailable. Please try again later.';
+
       } else if (
         status === 400 &&
         detail
       ) {
         errorMessage =
           `Analysis failed (400): ${detail}`;
-      } else if (isOffline) {
+
+      } else if (
+        isOffline
+      ) {
         errorMessage =
-          'Backend offline. Ensure the Python API service is running on port 8000.';
+          'Backend offline. Ensure the API service is running.';
+
       } else {
         errorMessage =
           `Analysis failed (${status || 'error'}): ${
@@ -790,50 +1375,76 @@ const ChatInterface = ({
           }`;
       }
 
+
       const botError = {
-        id: (Date.now() + 1).toString(),
+        id:
+          (
+            Date.now() + 1
+          ).toString(),
+
         sender: 'assistant',
+
         isError: true,
-        text: errorMessage,
-        timestamp: new Date().toLocaleTimeString(
-          [],
-          {
-            hour: '2-digit',
-            minute: '2-digit'
-          }
-        )
+
+        text:
+          errorMessage,
+
+        timestamp:
+          new Date().toLocaleTimeString(
+            [],
+            {
+              hour: '2-digit',
+              minute: '2-digit'
+            }
+          )
       };
+
 
       onUpdateSessionMessages([
         ...updatedMessages,
         botError
       ]);
+
     } finally {
       setIsProcessing(false);
     }
   };
 
-  /* ------------------------------------------------------------------------ */
-  /* UI                                                                       */
-  /* ------------------------------------------------------------------------ */
+
+  /* ========================================================================
+   * UI
+   * ====================================================================== */
 
   const samplePrompts = [
     {
-      title: 'Urban Infrastructure',
-      text: 'Identify new building constructions, road expansions, and urban density changes.'
+      title:
+        'Urban Infrastructure',
+
+      text:
+        'Identify new building constructions, road expansions, and urban density changes.'
     },
+
     {
-      title: 'Land Cover & Canopy',
-      text: 'Classify vegetation canopy, water bodies, agricultural parcels, and bare ground.'
+      title:
+        'Land Cover & Canopy',
+
+      text:
+        'Classify vegetation canopy, water bodies, agricultural parcels, and bare ground.'
     },
+
     {
-      title: 'Temporal Progression',
-      text: 'Analyze historical satellite sequence to map environmental and morphological shifts.'
+      title:
+        'Temporal Progression',
+
+      text:
+        'Analyze historical satellite sequence to map environmental and morphological shifts.'
     }
   ];
 
+
   const messages =
     activeSession?.messages || [];
+
 
   return (
     <div
@@ -847,10 +1458,12 @@ const ChatInterface = ({
         position: 'relative'
       }}
     >
-      {/* Header Bar */}
+
+      {/* Header */}
       <div
         style={{
-          padding: '0.9rem 1.75rem',
+          padding:
+            '0.9rem 1.75rem',
           borderBottom:
             '1px solid var(--border-subtle)',
           display: 'flex',
@@ -861,6 +1474,7 @@ const ChatInterface = ({
             'var(--bg-secondary)'
         }}
       >
+
         <div
           style={{
             display: 'flex',
@@ -868,18 +1482,21 @@ const ChatInterface = ({
             gap: '10px'
           }}
         >
+
           <h2
             style={{
               fontSize: '0.95rem',
               fontWeight: 600,
               color:
                 'var(--text-primary)',
-              letterSpacing: '-0.01em'
+              letterSpacing:
+                '-0.01em'
             }}
           >
             {activeSession?.title ||
               'New Analysis Session'}
           </h2>
+
         </div>
 
         <div
@@ -889,9 +1506,11 @@ const ChatInterface = ({
             gap: '8px'
           }}
         />
+
       </div>
 
-      {/* Messages Feed */}
+
+      {/* Messages */}
       <div
         style={{
           flex: 1,
@@ -902,7 +1521,9 @@ const ChatInterface = ({
           gap: '1.5rem'
         }}
       >
+
         {messages.length === 0 ? (
+
           <div
             style={{
               margin: 'auto',
@@ -916,6 +1537,7 @@ const ChatInterface = ({
               padding: '2rem 1rem'
             }}
           >
+
             <img
               src={logoSrc}
               alt="AKASHA"
@@ -930,6 +1552,7 @@ const ChatInterface = ({
             />
 
             <div>
+
               <h3
                 style={{
                   fontSize: '1.45rem',
@@ -954,12 +1577,13 @@ const ChatInterface = ({
                   margin: '0 auto'
                 }}
               >
-                Upload satellite imagery and ask
-                queries. AKASHA routes your request
-                to specialized models like GeoChat,
-                TEOChat, and M2CD.
+                Upload satellite imagery and ask queries.
+                AKASHA routes your request to specialized models
+                like GeoChat, TEOChat, and M2CD.
               </p>
+
             </div>
+
 
             <div
               style={{
@@ -971,22 +1595,28 @@ const ChatInterface = ({
                 marginTop: '0.5rem'
               }}
             >
+
               {samplePrompts.map(
-                (p, idx) => (
+                (prompt, index) => (
+
                   <div
-                    key={idx}
+                    key={index}
                     onClick={() =>
-                      handleSend(p.text)
+                      handleSend(
+                        prompt.text
+                      )
                     }
                     className="glass-interactive"
                     style={{
-                      padding: '14px 16px',
+                      padding:
+                        '14px 16px',
                       borderRadius: '10px',
                       textAlign: 'left',
                       cursor: 'pointer',
                       fontSize: '0.84rem'
                     }}
                   >
+
                     <div
                       style={{
                         display: 'flex',
@@ -996,6 +1626,7 @@ const ChatInterface = ({
                         marginBottom: '6px'
                       }}
                     >
+
                       <strong
                         style={{
                           color:
@@ -1003,13 +1634,14 @@ const ChatInterface = ({
                           fontSize: '0.86rem'
                         }}
                       >
-                        {p.title}
+                        {prompt.title}
                       </strong>
 
                       <ArrowUpRight
                         size={14}
                         color="var(--text-muted)"
                       />
+
                     </div>
 
                     <span
@@ -1021,278 +1653,307 @@ const ChatInterface = ({
                         display: 'block'
                       }}
                     >
-                      {p.text}
+                      {prompt.text}
                     </span>
+
                   </div>
+
                 )
               )}
+
             </div>
+
           </div>
+
         ) : (
-          messages.map(msg => {
-            const isUser =
-              msg.sender === 'user';
 
-            return (
-              <div
-                key={msg.id}
-                style={{
-                  display: 'flex',
-                  gap: '12px',
-                  alignSelf: isUser
-                    ? 'flex-end'
-                    : 'flex-start',
-                  maxWidth: isUser
-                    ? '72%'
-                    : '84%',
-                  animation:
-                    'fadeIn 0.25s ease-out'
-                }}
-              >
-                {!isUser && (
-                  <div
-                    style={{
-                      width: '32px',
-                      height: '32px',
-                      borderRadius: '8px',
-                      background:
-                        'var(--bg-card)',
-                      border:
-                        '1px solid var(--border-medium)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent:
-                        'center',
-                      flexShrink: 0
-                    }}
-                  >
-                    <Bot
-                      size={17}
-                      color="var(--text-primary)"
-                    />
-                  </div>
-                )}
+          messages.map(
+            message => {
 
+              const isUser =
+                message.sender === 'user';
+
+              return (
                 <div
+                  key={message.id}
                   style={{
                     display: 'flex',
-                    flexDirection: 'column',
-                    gap: '6px',
-                    width: '100%'
+                    gap: '12px',
+                    alignSelf:
+                      isUser
+                        ? 'flex-end'
+                        : 'flex-start',
+                    maxWidth:
+                      isUser
+                        ? '72%'
+                        : '84%',
+                    animation:
+                      'fadeIn 0.25s ease-out'
                   }}
                 >
+
+                  {!isUser && (
+                    <div
+                      style={{
+                        width: '32px',
+                        height: '32px',
+                        borderRadius: '8px',
+                        background:
+                          'var(--bg-card)',
+                        border:
+                          '1px solid var(--border-medium)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent:
+                          'center',
+                        flexShrink: 0
+                      }}
+                    >
+                      <Bot
+                        size={17}
+                        color="var(--text-primary)"
+                      />
+                    </div>
+                  )}
+
                   <div
                     style={{
-                      padding:
-                        '12px 16px',
-                      borderRadius: isUser
-                        ? '14px 14px 2px 14px'
-                        : '14px 14px 14px 2px',
-                      background: isUser
-                        ? 'var(--bg-card)'
-                        : 'var(--bg-secondary)',
-                      border: isUser
-                        ? '1px solid var(--border-medium)'
-                        : '1px solid var(--border-subtle)',
-                      color:
-                        'var(--text-primary)',
-                      boxShadow:
-                        '0 2px 8px rgba(0,0,0,0.06)'
+                      display: 'flex',
+                      flexDirection:
+                        'column',
+                      gap: '6px',
+                      width: '100%'
                     }}
                   >
-                    {msg.attachments &&
-                      msg.attachments.length >
-                        0 && (
-                        <div
-                          style={{
-                            display: 'flex',
-                            gap: '8px',
-                            flexWrap:
-                              'wrap',
-                            marginBottom:
-                              '8px'
-                          }}
-                        >
-                          {msg.attachments.map(
-                            (att, i) => {
-                              const imgUrl =
-                                typeof att ===
-                                'string'
-                                  ? att
-                                  : (
-                                      att?.url ||
-                                      att?.preview
+
+                    <div
+                      style={{
+                        padding:
+                          '12px 16px',
+                        borderRadius:
+                          isUser
+                            ? '14px 14px 2px 14px'
+                            : '14px 14px 14px 2px',
+                        background:
+                          isUser
+                            ? 'var(--bg-card)'
+                            : 'var(--bg-secondary)',
+                        border:
+                          isUser
+                            ? '1px solid var(--border-medium)'
+                            : '1px solid var(--border-subtle)',
+                        color:
+                          'var(--text-primary)',
+                        boxShadow:
+                          '0 2px 8px rgba(0,0,0,0.06)'
+                      }}
+                    >
+
+                      {message.attachments &&
+                        message.attachments.length >
+                          0 && (
+
+                          <div
+                            style={{
+                              display: 'flex',
+                              gap: '8px',
+                              flexWrap: 'wrap',
+                              marginBottom:
+                                '8px'
+                            }}
+                          >
+
+                            {message.attachments.map(
+                              (attachment, index) => {
+
+                                const imageUrl =
+                                  typeof attachment ===
+                                  'string'
+                                    ? attachment
+                                    : (
+                                      attachment?.url ||
+                                      attachment?.preview
                                     );
 
-                              const imgName =
-                                typeof att ===
-                                'string'
-                                  ? 'Satellite Image'
-                                  : (
-                                      att?.name ||
+                                const imageName =
+                                  typeof attachment ===
+                                  'string'
+                                    ? 'Satellite Image'
+                                    : (
+                                      attachment?.name ||
                                       'Satellite Image'
                                     );
 
-                              return (
-                                <div
-                                  key={i}
-                                  style={{
-                                    display:
-                                      'flex',
-                                    flexDirection:
-                                      'column',
-                                    gap: '4px'
-                                  }}
-                                >
-                                  {imgUrl ? (
-                                    <img
-                                      src={imgUrl}
-                                      alt={
-                                        imgName
-                                      }
-                                      onClick={() =>
-                                        setPreviewImage(
-                                          {
-                                            url: imgUrl,
-                                            name: imgName
-                                          }
-                                        )
-                                      }
-                                      title="Click to enlarge"
-                                      style={{
-                                        maxWidth:
-                                          '220px',
-                                        maxHeight:
-                                          '150px',
-                                        borderRadius:
-                                          '8px',
-                                        objectFit:
-                                          'cover',
-                                        border:
-                                          '1px solid var(--border-subtle)',
-                                        cursor:
-                                          'pointer',
-                                        transition:
-                                          'border-color 0.15s ease'
-                                      }}
-                                      onMouseEnter={e =>
-                                        e.currentTarget.style.borderColor =
-                                          'var(--border-strong)'
-                                      }
-                                      onMouseLeave={e =>
-                                        e.currentTarget.style.borderColor =
-                                          'var(--border-subtle)'
-                                      }
-                                    />
-                                  ) : (
-                                    <span
-                                      style={{
-                                        display:
-                                          'inline-flex',
-                                        alignItems:
-                                          'center',
-                                        gap:
-                                          '4px',
-                                        background:
-                                          'var(--bg-card-hover)',
-                                        border:
-                                          '1px solid var(--border-subtle)',
-                                        padding:
-                                          '4px 8px',
-                                        borderRadius:
-                                          '6px',
-                                        fontSize:
-                                          '0.74rem',
-                                        color:
-                                          'var(--text-primary)'
-                                      }}
-                                    >
-                                      <ImageIcon
-                                        size={
-                                          12
-                                        }
-                                      />
-                                      {
-                                        imgName
-                                      }
-                                    </span>
-                                  )}
-                                </div>
-                              );
-                            }
-                          )}
-                        </div>
-                      )}
+                                return (
+                                  <div
+                                    key={index}
+                                    style={{
+                                      display:
+                                        'flex',
+                                      flexDirection:
+                                        'column',
+                                      gap: '4px'
+                                    }}
+                                  >
 
-                    <p
-                      style={{
-                        fontSize:
-                          '0.92rem',
-                        lineHeight:
-                          1.55,
-                        whiteSpace:
-                          'pre-wrap',
-                        color: msg.isError
-                          ? '#ef4444'
-                          : 'var(--text-primary)'
-                      }}
-                    >
-                      {msg.text}
-                    </p>
+                                    {imageUrl ? (
+
+                                      <img
+                                        src={imageUrl}
+                                        alt={imageName}
+                                        onClick={() =>
+                                          setPreviewImage({
+                                            url: imageUrl,
+                                            name: imageName
+                                          })
+                                        }
+                                        title="Click to enlarge"
+                                        style={{
+                                          maxWidth:
+                                            '220px',
+                                          maxHeight:
+                                            '150px',
+                                          borderRadius:
+                                            '8px',
+                                          objectFit:
+                                            'cover',
+                                          border:
+                                            '1px solid var(--border-subtle)',
+                                          cursor:
+                                            'pointer',
+                                          transition:
+                                            'border-color 0.15s ease'
+                                        }}
+                                        onMouseEnter={event => {
+                                          event.currentTarget.style.borderColor =
+                                            'var(--border-strong)';
+                                        }}
+                                        onMouseLeave={event => {
+                                          event.currentTarget.style.borderColor =
+                                            'var(--border-subtle)';
+                                        }}
+                                      />
+
+                                    ) : (
+
+                                      <span
+                                        style={{
+                                          display:
+                                            'inline-flex',
+                                          alignItems:
+                                            'center',
+                                          gap: '4px',
+                                          background:
+                                            'var(--bg-card-hover)',
+                                          border:
+                                            '1px solid var(--border-subtle)',
+                                          padding:
+                                            '4px 8px',
+                                          borderRadius:
+                                            '6px',
+                                          fontSize:
+                                            '0.74rem',
+                                          color:
+                                            'var(--text-primary)'
+                                        }}
+                                      >
+
+                                        <ImageIcon size={12} />
+
+                                        {imageName}
+
+                                      </span>
+
+                                    )}
+
+                                  </div>
+                                );
+                              }
+                            )}
+
+                          </div>
+                        )}
+
+                      <p
+                        style={{
+                          fontSize:
+                            '0.92rem',
+                          lineHeight:
+                            1.55,
+                          whiteSpace:
+                            'pre-wrap',
+                          color:
+                            message.isError
+                              ? '#ef4444'
+                              : 'var(--text-primary)'
+                        }}
+                      >
+                        {message.text}
+                      </p>
+
+                    </div>
+
+
+                    {message.timestamp && (
+                      <div
+                        style={{
+                          fontSize:
+                            '0.72rem',
+                          color:
+                            'var(--text-muted)',
+                          textAlign:
+                            isUser
+                              ? 'right'
+                              : 'left',
+                          paddingLeft:
+                            isUser
+                              ? '0'
+                              : '2px',
+                          paddingRight:
+                            isUser
+                              ? '2px'
+                              : '0'
+                        }}
+                      >
+                        <span>
+                          {message.timestamp}
+                        </span>
+                      </div>
+                    )}
+
                   </div>
 
-                  {msg.timestamp && (
+
+                  {isUser && (
                     <div
                       style={{
-                        fontSize:
-                          '0.72rem',
-                        color:
-                          'var(--text-muted)',
-                        textAlign: isUser
-                          ? 'right'
-                          : 'left',
-                        paddingLeft: isUser
-                          ? '0'
-                          : '2px',
-                        paddingRight: isUser
-                          ? '2px'
-                          : '0'
+                        width: '32px',
+                        height: '32px',
+                        borderRadius: '8px',
+                        background:
+                          'var(--bg-card)',
+                        border:
+                          '1px solid var(--border-medium)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent:
+                          'center',
+                        flexShrink: 0
                       }}
                     >
-                      <span>
-                        {msg.timestamp}
-                      </span>
+                      <User
+                        size={16}
+                        color="var(--text-secondary)"
+                      />
                     </div>
                   )}
-                </div>
 
-                {isUser && (
-                  <div
-                    style={{
-                      width: '32px',
-                      height: '32px',
-                      borderRadius: '8px',
-                      background:
-                        'var(--bg-card)',
-                      border:
-                        '1px solid var(--border-subtle)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent:
-                        'center',
-                      flexShrink: 0
-                    }}
-                  >
-                    <User
-                      size={16}
-                      color="var(--text-secondary)"
-                    />
-                  </div>
-                )}
-              </div>
-            );
-          })
+                </div>
+              );
+            }
+          )
         )}
+
 
         {isProcessing && (
           <div
@@ -1302,6 +1963,7 @@ const ChatInterface = ({
               alignItems: 'center'
             }}
           >
+
             <div
               style={{
                 width: '32px',
@@ -1310,22 +1972,26 @@ const ChatInterface = ({
                 background:
                   'var(--bg-card)',
                 border:
-                  '1px solid var(--border-subtle)',
+                  '1px solid var(--border-medium)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent:
                   'center'
               }}
             >
+
               <Bot
                 size={17}
                 color="var(--text-primary)"
               />
+
             </div>
+
 
             <div
               style={{
-                padding: '10px 16px',
+                padding:
+                  '10px 16px',
                 borderRadius: '12px',
                 background:
                   'var(--bg-card)',
@@ -1336,25 +2002,31 @@ const ChatInterface = ({
                 gap: '10px'
               }}
             >
+
               <div className="spinner" />
 
               <span
                 style={{
-                  fontSize: '0.86rem',
+                  fontSize:
+                    '0.86rem',
                   color:
                     'var(--text-secondary)'
                 }}
               >
                 Processing imagery with specialist model...
               </span>
+
             </div>
+
           </div>
         )}
 
         <div ref={messagesEndRef} />
+
       </div>
 
-      {/* Input Area */}
+
+      {/* Input */}
       <div
         style={{
           padding:
@@ -1365,72 +2037,81 @@ const ChatInterface = ({
             '1px solid var(--border-subtle)'
         }}
       >
-        {/* Attachment Chips */}
+
         {selectedFiles &&
           selectedFiles.length > 0 && (
-            <div
-              style={{
-                display: 'flex',
-                gap: '6px',
-                overflowX: 'auto',
-                paddingBottom: '8px',
-                marginBottom: '4px'
-              }}
-            >
-              {selectedFiles.map(
-                (file, idx) => (
-                  <div
-                    key={idx}
+
+          <div
+            style={{
+              display: 'flex',
+              gap: '6px',
+              overflowX: 'auto',
+              paddingBottom: '8px',
+              marginBottom: '4px'
+            }}
+          >
+
+            {selectedFiles.map(
+              (file, index) => (
+
+                <div
+                  key={index}
+                  style={{
+                    display:
+                      'inline-flex',
+                    alignItems:
+                      'center',
+                    gap: '6px',
+                    background:
+                      'var(--bg-card)',
+                    border:
+                      '1px solid var(--border-medium)',
+                    borderRadius:
+                      '6px',
+                    padding:
+                      '3px 8px',
+                    fontSize:
+                      '0.76rem',
+                    color:
+                      'var(--text-primary)'
+                  }}
+                >
+
+                  <ImageIcon
+                    size={13}
+                    color="var(--text-secondary)"
+                  />
+
+                  <span>
+                    {file.name}
+                  </span>
+
+                  <X
+                    size={13}
                     style={{
-                      display:
-                        'inline-flex',
-                      alignItems:
-                        'center',
-                      gap: '6px',
-                      background:
-                        'var(--bg-card)',
-                      border:
-                        '1px solid var(--border-medium)',
-                      borderRadius: '6px',
-                      padding: '3px 8px',
-                      fontSize: '0.76rem',
+                      cursor: 'pointer',
+                      marginLeft: '4px',
                       color:
-                        'var(--text-primary)'
+                        'var(--text-muted)'
                     }}
-                  >
-                    <ImageIcon
-                      size={13}
-                      color="var(--text-secondary)"
-                    />
-
-                    <span>
-                      {file.name}
-                    </span>
-
-                    <X
-                      size={13}
-                      style={{
-                        cursor:
-                          'pointer',
-                        marginLeft:
-                          '4px',
-                        color:
-                          'var(--text-muted)'
-                      }}
-                      onClick={() =>
-                        onFileSelect(
-                          selectedFiles.filter(
-                            (_, i) =>
-                              i !== idx
-                          )
+                    onClick={() =>
+                      onFileSelect(
+                        selectedFiles.filter(
+                          (_, itemIndex) =>
+                            itemIndex !==
+                            index
                         )
-                      }
-                    />
-                  </div>
-                )
-              )}
-            </div>
-          )}
+                      )
+                    }
+                  />
+
+                </div>
+              )
+            )}
+
+          </div>
+        )}
+
 
         <div
           style={{
@@ -1439,7 +2120,7 @@ const ChatInterface = ({
             alignItems: 'center'
           }}
         >
-          {/* File Attachment Button */}
+
           <label
             className="btn-secondary"
             style={{
@@ -1449,6 +2130,7 @@ const ChatInterface = ({
             }}
             title="Attach Satellite Imagery"
           >
+
             <input
               type="file"
               multiple
@@ -1456,17 +2138,17 @@ const ChatInterface = ({
               style={{
                 display: 'none'
               }}
-              onChange={e => {
+              onChange={event => {
                 const incomingFiles =
                   Array.from(
-                    e.target.files || []
+                    event.target.files ||
+                    []
                   );
 
                 if (
-                  incomingFiles.length ===
-                  0
+                  incomingFiles.length === 0
                 ) {
-                  e.target.value = '';
+                  event.target.value = '';
                   return;
                 }
 
@@ -1491,26 +2173,27 @@ const ChatInterface = ({
                   )
                 );
 
-                e.target.value = '';
+                event.target.value = '';
               }}
             />
 
             <Paperclip size={17} />
+
           </label>
 
-          {/* Text Input */}
+
           <input
             type="text"
             className="glass-input"
             placeholder="Ask about imagery features, segmentation, or morphological changes..."
             value={query}
-            onChange={e =>
+            onChange={event =>
               setQuery(
-                e.target.value
+                event.target.value
               )
             }
-            onKeyDown={e =>
-              e.key === 'Enter' &&
+            onKeyDown={event =>
+              event.key === 'Enter' &&
               handleSend()
             }
             disabled={
@@ -1523,7 +2206,7 @@ const ChatInterface = ({
             }}
           />
 
-          {/* Send Button */}
+
           <button
             className="btn-primary"
             onClick={() =>
@@ -1531,12 +2214,16 @@ const ChatInterface = ({
             }
             disabled={
               (
-                (!query.trim() &&
-                  (!selectedFiles ||
-                    selectedFiles.length ===
-                      0)) ||
-                isProcessing
-              )
+                (
+                  !query.trim()
+                ) &&
+                (
+                  !selectedFiles ||
+                  selectedFiles.length ===
+                    0
+                )
+              ) ||
+              isProcessing
             }
             style={{
               padding:
@@ -1544,18 +2231,25 @@ const ChatInterface = ({
               borderRadius: '8px'
             }}
           >
+
             {isProcessing ? (
               <div className="spinner" />
             ) : (
               <Send size={16} />
             )}
 
-            <span>Run</span>
+            <span>
+              Run
+            </span>
+
           </button>
+
         </div>
+
       </div>
 
-      {/* Full-screen Lightbox Modal */}
+
+      {/* Lightbox */}
       {previewImage && (
         <div
           onClick={() =>
@@ -1579,9 +2273,10 @@ const ChatInterface = ({
               'fadeIn 0.2s ease-out'
           }}
         >
+
           <div
-            onClick={e =>
-              e.stopPropagation()
+            onClick={event =>
+              event.stopPropagation()
             }
             style={{
               position: 'relative',
@@ -1594,18 +2289,19 @@ const ChatInterface = ({
                 'var(--bg-card)',
               border:
                 '1px solid var(--border-medium)',
-              borderRadius: '12px',
+              borderRadius:
+                '12px',
               padding: '1.25rem',
               boxShadow:
                 '0 24px 60px rgba(0,0,0,0.5)'
             }}
           >
+
             <div
               style={{
                 display: 'flex',
                 width: '100%',
-                alignItems:
-                  'center',
+                alignItems: 'center',
                 justifyContent:
                   'space-between',
                 marginBottom:
@@ -1613,6 +2309,7 @@ const ChatInterface = ({
                 gap: '12px'
               }}
             >
+
               <h4
                 style={{
                   color:
@@ -1622,11 +2319,10 @@ const ChatInterface = ({
                   fontWeight: 600
                 }}
               >
-                {
-                  previewImage.name ||
-                  'Satellite Imagery'
-                }
+                {previewImage.name ||
+                  'Satellite Imagery'}
               </h4>
+
 
               <div
                 style={{
@@ -1636,6 +2332,7 @@ const ChatInterface = ({
                     'center'
                 }}
               >
+
                 <a
                   href={
                     previewImage.url
@@ -1653,11 +2350,10 @@ const ChatInterface = ({
                   Open Original
                 </a>
 
+
                 <button
                   onClick={() =>
-                    setPreviewImage(
-                      null
-                    )
+                    setPreviewImage(null)
                   }
                   style={{
                     background:
@@ -1665,16 +2361,18 @@ const ChatInterface = ({
                     border: 'none',
                     color:
                       'var(--text-primary)',
-                    cursor:
-                      'pointer',
+                    cursor: 'pointer',
                     padding: '4px',
                     display: 'flex'
                   }}
                 >
                   <X size={18} />
                 </button>
+
               </div>
+
             </div>
+
 
             <img
               src={
@@ -1685,23 +2383,23 @@ const ChatInterface = ({
                 'Full preview'
               }
               style={{
-                maxWidth:
-                  '100%',
-                maxHeight:
-                  '75vh',
-                borderRadius:
-                  '8px',
-                objectFit:
-                  'contain',
+                maxWidth: '100%',
+                maxHeight: '75vh',
+                borderRadius: '8px',
+                objectFit: 'contain',
                 border:
                   '1px solid var(--border-subtle)'
               }}
             />
+
           </div>
+
         </div>
       )}
+
     </div>
   );
 };
+
 
 export default ChatInterface;
