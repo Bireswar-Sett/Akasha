@@ -1277,7 +1277,9 @@ const ChatInterface = ({
           '/api/analyze',
           requestBody,
           {
-            timeout: 30000,
+            // Qwen orchestration can legitimately exceed a short browser
+            // timeout while the API remains healthy.
+            timeout: 180000,
 
             headers: {
               Authorization:
@@ -1333,8 +1335,12 @@ const ChatInterface = ({
         error?.response?.data?.detail ||
         '';
 
+      const isTimeout =
+        error?.code === 'ECONNABORTED';
+
       const isOffline =
-        !error?.response;
+        !error?.response &&
+        !isTimeout;
 
       let errorMessage;
 
@@ -1360,9 +1366,11 @@ const ChatInterface = ({
         errorMessage =
           `Analysis failed (400): ${detail}`;
 
-      } else if (
-        isOffline
-      ) {
+      } else if (isTimeout) {
+        errorMessage =
+          'Analysis is taking longer than expected. The API is reachable; please try again shortly.';
+
+      } else if (isOffline) {
         errorMessage =
           'Backend offline. Ensure the API service is running.';
 
