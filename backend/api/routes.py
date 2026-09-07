@@ -167,6 +167,8 @@ async def analyze_image(
     # production Qwen service with trusted Storage metadata.
     if type(qwen_service) is QwenService and type(storage_service) is FirebaseStorageService:
         qwen_kwargs["image_metadata"] = [storage_service.get_image_metadata(path) for path in clean_paths]
+    if request.manifest is not None:
+        qwen_kwargs["manifest"] = request.manifest
 
     answer = qwen_service.analyze(**qwen_kwargs)
 

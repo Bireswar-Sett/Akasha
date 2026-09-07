@@ -2,6 +2,7 @@ import torch
 
 from videollava.eval.eval import load_model
 from videollava.eval.inference import run_inference_single
+from videollava.model.builder import resolve_quantization
 
 
 class TEOChatEngine:
@@ -15,9 +16,14 @@ class TEOChatEngine:
         model_path="jirvin16/TEOChat",
         model_base=None,
         device="cuda",
-        load_8bit=True,
+        load_8bit=False,
+        load_4bit=False,
+        quantization=None,
     ):
         self.device = device
+        self.load_8bit, self.load_4bit = resolve_quantization(
+            load_8bit, load_4bit, quantization
+        )
 
         if device == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("CUDA was requested but no GPU is available.")
@@ -31,7 +37,9 @@ class TEOChatEngine:
         ) = load_model(
             model_path=model_path,
             model_base=model_base,
-            load_8bit=load_8bit,
+            load_8bit=self.load_8bit,
+            load_4bit=self.load_4bit,
+            quantization=quantization,
             device=device,
         )
 

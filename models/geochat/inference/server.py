@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import tempfile
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from models.geochat.inference.engine import (
     GeoChatEngine,
 )
 from models.geochat.inference.sar import (
+    load_image_input,
     sar1_to_rgb,
 )
 
@@ -24,6 +26,8 @@ app = FastAPI(
     title="GeoChat Inference Service",
     version="1.0.0",
 )
+
+logger = logging.getLogger("geochat.server")
 
 
 # ----------------------------------------------------------------------
@@ -68,15 +72,26 @@ def _run_image(image, prompt: str, max_new_tokens: int = 128) -> dict:
     }
 
 
+def _prepare_image(image):
+    """Normalize a Gradio path or PIL image before model inference."""
+    try:
+        return load_image_input(image)
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.exception("Image preprocessing failed")
+        raise ValueError("Unable to process the supplied image.") from exc
+
+
 def geochat_specialist(image, prompt: str, max_new_tokens: int = 128) -> dict:
     """Gradio-callable one-image specialist operation for Qwen."""
-    return _run_image(image, prompt, max_new_tokens)
+    return _run_image(_prepare_image(image), prompt, max_new_tokens)
 
 
 geochat_demo = gr.Interface(
     fn=geochat_specialist,
     inputs=[
-        gr.Image(type="pil", label="Image"),
+        gr.File(type="filepath", label="Image / TIFF / GeoTIFF"),
         gr.Textbox(label="Specialist Prompt"),
         gr.Number(value=128, minimum=1, maximum=512, precision=0, visible=False),
     ],
@@ -128,13 +143,7 @@ async def geochat(
                 contents
             )
 
-        from PIL import Image
-
-        pil_image = Image.open(
-            temp_path
-        ).convert("RGB")
-
-        return _run_image(pil_image, prompt, max_new_tokens)
+        return _run_image(_prepare_image(temp_path), prompt, max_new_tokens)
 
     except ValueError as exc:
 
@@ -144,10 +153,10 @@ async def geochat(
         ) from exc
 
     except Exception as exc:
-
+        logger.exception("GeoChat image request failed")
         raise HTTPException(
             status_code=500,
-            detail=str(exc),
+            detail="Unable to process the supplied image.",
         ) from exc
 
     finally:
@@ -225,10 +234,10 @@ async def geochat_sar(
         ) from exc
 
     except Exception as exc:
-
+        logger.exception("GeoChat SAR request failed")
         raise HTTPException(
             status_code=500,
-            detail=str(exc),
+            detail="Unable to process the supplied SAR imagery.",
         ) from exc
 
     finally:

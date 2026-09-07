@@ -17,15 +17,33 @@ import os
 import warnings
 import shutil
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 import torch
 from videollava.model import *
 from videollava.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, \
     DEFAULT_VIDEO_PATCH_TOKEN, DEFAULT_VID_START_TOKEN, DEFAULT_VID_END_TOKEN
 
 
-def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", **kwargs):
+def resolve_quantization(load_8bit=False, load_4bit=False, quantization=None):
+    """Resolve explicit/local quantization while defaulting to ZeroGPU-safe FP16."""
+    mode = quantization or os.getenv("TEOCHAT_QUANTIZATION") or os.getenv("TE0CHAT_QUANTIZATION")
+    if mode is None:
+        mode = "4bit" if load_4bit else "8bit" if load_8bit else "none"
+    mode = mode.strip().lower()
+    if mode not in {"none", "8bit", "4bit"}:
+        raise ValueError("TEOCHAT_QUANTIZATION must be one of: none, 8bit, 4bit")
+    return {"none": (False, False), "8bit": (True, False), "4bit": (False, True)}[mode]
+
+
+def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", quantization=None, **kwargs):
+    load_8bit, load_4bit = resolve_quantization(load_8bit, load_4bit, quantization)
     kwargs = {"device_map": device_map, **kwargs}
+
+    if not load_8bit and not load_4bit:
+        kwargs.pop("load_in_8bit", None)
+        kwargs.pop("load_in_4bit", None)
+        kwargs.pop("quantization_config", None)
+        kwargs["torch_dtype"] = torch.float16
 
     if device != "cuda":
         kwargs['device_map'] = {"": device}
@@ -94,6 +112,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             if load_8bit:
                 kwargs['load_in_8bit'] = True
             elif load_4bit:
+                from transformers import BitsAndBytesConfig
                 kwargs['load_in_4bit'] = True
                 kwargs['quantization_config'] = BitsAndBytesConfig(
                     load_in_4bit=True,

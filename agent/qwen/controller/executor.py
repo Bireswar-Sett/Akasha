@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 from gradio_client import Client, handle_file
 
 from qwen.controller.image_processing import (
+    combine_sar_channels_file,
     extract_change_regions,
     load_numeric_mask,
     sar_to_pseudo_rgb_file,
@@ -29,6 +31,10 @@ logger = logging.getLogger("akasha.executor")
 
 class ToolExecutionError(RuntimeError):
     """Raised when a specialist or local processing tool cannot execute."""
+
+    def __init__(self, message: str, status: str = "upstream_error") -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _is_local_file(value: str) -> bool:
@@ -53,12 +59,43 @@ class ToolExecutor:
     ) -> None:
         self.hf_token = hf_token if hf_token is not None else HF_TOKEN
 
+        self._clients: dict[str, Client] = {}
+
+    @staticmethod
+    def _failure_status(exc: Exception) -> str:
+        name = type(exc).__name__.lower()
+        message = str(exc).lower()
+        if "timeout" in name or "timeout" in message:
+            return "timeout"
+        if any(value in message for value in ("401", "403", "unauthorized", "forbidden", "authentication")):
+            return "authentication_error"
+        if any(value in message for value in ("400", "invalid input", "validation", "unsupported endpoint")):
+            return "invalid_input"
+        if any(value in message for value in ("503", "502", "500", "space is unavailable", "sleeping", "startup", "connection", "temporarily")):
+            return "unavailable"
+        return "upstream_error"
+
+    @staticmethod
+    def _safe_error(tool_name: str, status: str) -> str:
+        return f"{tool_name} specialist is currently {status.replace('_', ' ')}."
+
+    def _remote_predict(self, key: str, space: str, tool_name: str, **kwargs: Any) -> Any:
         if not self.hf_token:
             raise ToolExecutionError(
-                "HF_TOKEN is required to call private/specialist Spaces."
+                f"{tool_name} specialist authentication is not configured.",
+                "authentication_error",
             )
-
-        self._clients: dict[str, Client] = {}
+        attempts = 2
+        for attempt in range(attempts):
+            try:
+                return self._client(key, space).predict(**kwargs)
+            except Exception as exc:
+                failure_status = self._failure_status(exc)
+                transient = failure_status in {"timeout", "unavailable", "upstream_error"}
+                if transient and attempt + 1 < attempts:
+                    time.sleep(0.5 * (2 ** attempt))
+                    continue
+                raise ToolExecutionError(self._safe_error(tool_name, failure_status), failure_status) from exc
 
     def _client(self, key: str, space: str) -> Client:
         if key not in self._clients:
@@ -150,20 +187,13 @@ class ToolExecutor:
                 raise ToolExecutionError(f"Invalid bounding_box: {exc}") from exc
         max_tokens = self._token_limit(arguments, 256, 512)
 
-        try:
-            result = self._client(
-                "geochat",
-                GEOCHAT_SPACE,
-            ).predict(
+        result = self._remote_predict(
+                "geochat", GEOCHAT_SPACE, "GeoChat",
                 image=handle_file(image_ref),
                 prompt=prompt,
                 max_new_tokens=max_tokens,
                 api_name=GEOCHAT_API_NAME,
             )
-        except Exception as exc:
-            raise ToolExecutionError(
-                f"GeoChat request failed: {type(exc).__name__}"
-            ) from exc
 
         return self._tool_success(
             "geochat",
@@ -181,21 +211,14 @@ class ToolExecutor:
         prompt = self._prompt(arguments)
         max_tokens = self._token_limit(arguments, 384, 768)
 
-        try:
-            result = self._client(
-                "teochat",
-                TEOCHAT_SPACE,
-            ).predict(
+        result = self._remote_predict(
+                "teochat", TEOCHAT_SPACE, "TEOChat",
                 image_t1=handle_file(image_1),
                 image_t2=handle_file(image_2),
                 prompt=prompt,
                 max_new_tokens=max_tokens,
                 api_name=TEOCHAT_API_NAME,
             )
-        except Exception as exc:
-            raise ToolExecutionError(
-                f"TEOChat request failed: {type(exc).__name__}"
-            ) from exc
 
         return self._tool_success(
             "teochat",
@@ -207,22 +230,25 @@ class ToolExecutor:
         self,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        image_t1 = self._file_or_url_arg(arguments, "image_t1_ref")
-        image_t2 = self._file_or_url_arg(arguments, "image_t2_ref")
+        if all(key in arguments for key in ("image_t1_vv_ref", "image_t1_vh_ref", "image_t2_vv_ref", "image_t2_vh_ref")):
+            from qwen.controller.downloads import download_image_reference
 
-        try:
-            result = self._client(
-                "m2cd",
-                M2CD_SPACE,
-            ).predict(
+            def local_channel(key: str) -> str:
+                value = self._file_or_url_arg(arguments, key)
+                return download_image_reference(value) if value.startswith("https://") else value
+
+            image_t1 = combine_sar_channels_file(local_channel("image_t1_vv_ref"), local_channel("image_t1_vh_ref"))
+            image_t2 = combine_sar_channels_file(local_channel("image_t2_vv_ref"), local_channel("image_t2_vh_ref"))
+        else:
+            image_t1 = self._file_or_url_arg(arguments, "image_t1_ref")
+            image_t2 = self._file_or_url_arg(arguments, "image_t2_ref")
+
+        result = self._remote_predict(
+                "m2cd", M2CD_SPACE, "M2CD",
                 image_t1=handle_file(image_t1),
                 image_t2=handle_file(image_t2),
                 api_name=M2CD_API_NAME,
             )
-        except Exception as exc:
-            raise ToolExecutionError(
-                f"M2CD request failed: {type(exc).__name__}"
-            ) from exc
 
         # The exact M2CD output contract is intentionally isolated here.
         # Once its Space is hosted, adapt only this normalization layer.
@@ -255,10 +281,26 @@ class ToolExecutor:
     def _execute_pseudo_rgb(
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        image_ref = ToolExecutor._file_or_url_arg(
-            arguments,
-            "image_ref",
-        )
+        image_ref = arguments.get("image_ref")
+        vv_ref = arguments.get("vv_ref")
+        vh_ref = arguments.get("vh_ref")
+        if image_ref:
+            image_ref = ToolExecutor._file_or_url_arg(arguments, "image_ref")
+        elif vv_ref and vh_ref and vv_ref == vh_ref:
+            # Legacy callers supplied one multi-band raster as the image ref.
+            image_ref = ToolExecutor._file_or_url_arg(arguments, "vv_ref")
+        elif vv_ref and vh_ref:
+            from qwen.controller.downloads import download_image_reference
+
+            vv_ref = ToolExecutor._file_or_url_arg(arguments, "vv_ref")
+            vh_ref = ToolExecutor._file_or_url_arg(arguments, "vh_ref")
+            if vv_ref.startswith("https://"):
+                vv_ref = download_image_reference(vv_ref)
+            if vh_ref.startswith("https://"):
+                vh_ref = download_image_reference(vh_ref)
+            image_ref = combine_sar_channels_file(vv_ref, vh_ref)
+        else:
+            raise ToolExecutionError("Pseudo-RGB requires VV and VH references.", "invalid_input")
 
         crop = arguments.get("crop")
         if crop is not None and not isinstance(crop, dict):
@@ -336,13 +378,19 @@ class ToolExecutor:
             return result
 
         except ToolExecutionError as exc:
-            logger.error(
-                "Tool %s failed: %s",
-                tool_name,
-                str(exc),
-            )
+            logger.warning("Tool %s failed with status %s", tool_name, exc.status)
             return {
                 "ok": False,
                 "tool": tool_name,
                 "error": str(exc),
+                "status": exc.status,
+            }
+        except Exception as exc:
+            failure_status = self._failure_status(exc)
+            logger.warning("Tool %s failed with status %s", tool_name, failure_status)
+            return {
+                "ok": False,
+                "tool": tool_name,
+                "error": self._safe_error(tool_name, failure_status),
+                "status": failure_status,
             }

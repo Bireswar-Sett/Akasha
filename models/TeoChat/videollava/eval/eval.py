@@ -12,7 +12,7 @@ from videollava.eval.classification import classification_metrics
 from videollava.eval.detection import detection_metrics
 
 
-def load_model(model_path, model_base, load_8bit=False, load_4bit=False, cache_dir=None, device=None):
+def load_model(model_path, model_base, load_8bit=False, load_4bit=False, cache_dir=None, device=None, quantization=None):
 
     # Disable the redundant torch default initialization to accelerate model creation.
     disable_torch_init()
@@ -26,6 +26,7 @@ def load_model(model_path, model_base, load_8bit=False, load_4bit=False, cache_d
         load_8bit=load_8bit,
         device=device,
         cache_dir=cache_dir,
+        quantization=quantization,
     )
     # Remove video tower from model to save memory
     model.model.video_tower = None

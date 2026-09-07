@@ -73,6 +73,11 @@ Use the minimum valid workflow capable of answering the request.
 INPUT_CONFIGURATION_GUIDANCE = """
 SUPPORTED INPUT CONFIGURATIONS
 
+The backend manifest is authoritative. Count logical observations, not
+physical files. One SAR observation contains a VV/VH pair and must never
+be treated as two observations. Use only observation and image IDs present
+in the manifest; never create URLs, credentials, or metadata.
+
 1. SINGLE IMAGE
 
 Exactly one remote-sensing image.
@@ -104,8 +109,9 @@ Exactly two spatially corresponding images:
 The images should represent the same geographic area and be
 co-registered when the task requires joint reasoning.
 
-Default specialist:
-TEOChat
+For semantic cross-modal reasoning, use the deployed cross-modal
+specialist only when its capability matches the requested task. Otherwise
+analyze each modality separately with the supported single-image tools.
 
 
 3. BI-TEMPORAL PAIR
@@ -121,8 +127,10 @@ Typical tasks:
 - localization of change
 - temporal interpretation
 
-Default specialist:
-M²CD
+Use M²CD only for the exact SAR/SAR configuration supported by its
+deployed model. Temporal optical sequences use TEOChat when available.
+Do not route SAR/SAR to M²CD merely because two files or two observations
+are present.
 """.strip()
 
 
@@ -392,6 +400,11 @@ The controller performs:
 Never fabricate a specialist result when a tool failed.
 Never silently replace a failed specialist with a tool that does not
 have equivalent capability.
+
+Represent expected specialist failures as structured evidence with a
+status such as unavailable, timeout, authentication_error, invalid_input,
+or upstream_error. Mark dependent steps as skipped. A failed tool never
+supplies evidence and must not be replaced with an invented result.
 """.strip()
 
 
@@ -471,6 +484,11 @@ by the optical and SAR observations when useful.
 Do not expose hidden reasoning or internal chain-of-thought.
 
 Do not claim certainty beyond what the specialist outputs support.
+
+If evidence contains a failed or unavailable tool, explicitly explain
+what analysis could not be completed. Never claim a mask, detection,
+classification, localization, confidence, or semantic interpretation
+from a tool whose status is not completed.
 """.strip()
 
 

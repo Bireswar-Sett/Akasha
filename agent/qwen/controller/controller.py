@@ -12,7 +12,13 @@ from qwen.controller.schemas import (
     AnalysisRequest,
     AnalysisResponse,
     ExecutionTrace,
+    ImageReference,
+    InputManifest,
+    Observation,
+    RelationshipMetadata,
+    SARFiles,
     SpecialistEvidence,
+    ToolStatus,
 )
 
 logger = logging.getLogger("satquery.controller")
@@ -52,28 +58,96 @@ class QwenController:
         evidence: list[SpecialistEvidence] = []
         trace: list[ExecutionTrace] = []
         artifacts: dict[str, Any] = {}
+        step_status: dict[int, str] = {}
 
         for index, call in enumerate(plan.calls, start=1):
+            blocked_by = [dependency for dependency in call.depends_on if step_status.get(dependency) != ToolStatus.COMPLETED.value]
+            if blocked_by:
+                step_status[index] = ToolStatus.SKIPPED.value
+                trace.append(ExecutionTrace(step=index, tool=call.name, operation=call.operation, status=ToolStatus.SKIPPED, details={"depends_on": blocked_by}, bounding_boxes=call.bounding_boxes))
+                evidence.append(SpecialistEvidence(
+                    tool=call.name,
+                    operation=call.operation,
+                    success=False,
+                    status=ToolStatus.SKIPPED,
+                    error_summary="Skipped because a dependent tool did not complete.",
+                    bounding_boxes=call.bounding_boxes,
+                ))
+                continue
             arguments = self._bind_authorized_references(call.arguments, image_refs, artifacts)
             started = perf_counter()
             result = self.executor.execute(call.name, arguments)
             duration_ms = int((perf_counter() - started) * 1000)
             ok = bool(result.get("ok"))
-            trace.append(ExecutionTrace(step=index, tool=call.name, operation=call.operation, status="completed" if ok else "failed", duration_ms=duration_ms, bounding_boxes=call.bounding_boxes))
+            result_status = ToolStatus.COMPLETED.value if ok else str(result.get("status") or ToolStatus.FAILED.value)
+            step_status[index] = result_status
+            trace.append(ExecutionTrace(step=index, tool=call.name, operation=call.operation, status=result_status, duration_ms=duration_ms, bounding_boxes=call.bounding_boxes))
             if not ok:
-                return AnalysisResponse(status="failed", **base, execution=trace, evidence=evidence, error={"tool": call.name, "reason": result.get("error", "specialist failed")}).model_dump()
+                evidence.append(SpecialistEvidence(
+                    tool=call.name,
+                    operation=call.operation,
+                    success=False,
+                    status=result_status,
+                    error_summary=str(result.get("error", "specialist failed")),
+                    bounding_boxes=call.bounding_boxes,
+                ))
+                continue
             result_value = result.get("result", result)
             if call.name == "pseudo_rgb" and isinstance(result_value, dict):
                 artifacts["artifact:pseudo_rgb"] = result_value.get("image_ref")
-            evidence.append(SpecialistEvidence(tool=call.name, operation=call.operation, result=result_value, bounding_boxes=call.bounding_boxes))
+            evidence.append(SpecialistEvidence(tool=call.name, operation=call.operation, result=result_value, bounding_boxes=call.bounding_boxes, success=True, status=ToolStatus.COMPLETED))
 
         answer = self._synthesize(request.user_query or request.user_request, base, evidence, max_new_tokens)
-        return AnalysisResponse(status="completed", **base, execution=trace, evidence=evidence, answer=answer).model_dump()
+        has_failures = any(item.status not in {ToolStatus.COMPLETED, ToolStatus.AVAILABLE} for item in evidence)
+        return AnalysisResponse(status="completed_with_warnings" if has_failures else "completed", **base, execution=trace, evidence=evidence, answer=answer).model_dump()
 
     def run(self, user_message: str, manifest: dict[str, Any], image_refs: dict[str, str | None], max_new_tokens: int = 512) -> dict[str, Any]:
         urls = [value for value in image_refs.values() if value]
-        request = AnalysisRequest(user_request=user_message, signed_image_urls=urls, metadata=manifest)
+        request_manifest = self._authorized_manifest(manifest, image_refs)
+        request = AnalysisRequest(user_request=user_message, signed_image_urls=urls, manifest=request_manifest, metadata=manifest)
         return self.run_request(request, max_new_tokens)
+
+    @staticmethod
+    def _authorized_manifest(manifest: dict[str, Any], image_refs: dict[str, str | None]) -> InputManifest:
+        observations: list[Observation] = []
+
+        def reference(value: Any, default_id: str) -> ImageReference:
+            reference_id = value.get("id", default_id) if isinstance(value, dict) else str(value)
+            url = image_refs.get(reference_id)
+            if not url:
+                raise ValueError(f"Manifest references an unauthorized image ID: {reference_id}")
+            return ImageReference(image_id=reference_id, url=url)
+
+        for item in manifest.get("observations", []):
+            modality = item.get("modality")
+            observation_id = str(item.get("id"))
+            if modality == "sar":
+                sar = item.get("sar") or {}
+                observations.append(Observation(
+                    id=observation_id,
+                    modality="sar",
+                    acquisition_time=item.get("acquisition_time"),
+                    sar=SARFiles(
+                        vv=reference(sar.get("vv"), f"{observation_id}_vv"),
+                        vh=reference(sar.get("vh"), f"{observation_id}_vh"),
+                    ),
+                    metadata=item.get("metadata", {}),
+                ))
+            else:
+                observations.append(Observation(
+                    id=observation_id,
+                    modality=modality,
+                    acquisition_time=item.get("acquisition_time"),
+                    image=reference(item.get("image"), f"{observation_id}_image"),
+                    metadata=item.get("metadata", {}),
+                ))
+
+        relationship = manifest.get("relationship") or {}
+        return InputManifest(
+            observations=observations,
+            relationship=RelationshipMetadata.model_validate(relationship),
+            metadata=manifest.get("metadata", {}),
+        )
 
     def _synthesize(self, user_request: str, base: dict[str, Any], evidence: list[SpecialistEvidence], max_new_tokens: int) -> str:
         messages = [

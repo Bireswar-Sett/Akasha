@@ -26,6 +26,32 @@ At least one image is required. Multiple images are passed together to one
 behavior. TEOChat does not route workflows, access Firebase, create signed
 URLs, or synthesize the final user answer.
 
+The endpoint contract is explicit:
+
+```text
+image_t1 = optical image at T1
+image_t2 = optical image at T2
+```
+
+Requests with either image missing are rejected intentionally.
+
+## ZeroGPU model loading
+
+The Hugging Face ZeroGPU deployment loads TEOChat with FP16 weights and no
+bitsandbytes quantization:
+
+```text
+TEOCHAT_QUANTIZATION=none
+load_8bit=False
+load_4bit=False
+torch_dtype=torch.float16
+```
+
+For local deployments with sufficient memory, `TEOCHAT_QUANTIZATION=8bit` or
+`4bit` preserves the existing opt-in quantized loader. The compatibility alias
+`TE0CHAT_QUANTIZATION` is also accepted. The FP16 path does not require
+bitsandbytes.
+
 ## Structured result
 
 The endpoint returns JSON with `answer`, `bounding_boxes`, `input_regions`,

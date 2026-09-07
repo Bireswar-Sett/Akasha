@@ -7,11 +7,11 @@ python_version: "3.12"
 
 # SatQuery AI Qwen Controller
 
-This Hugging Face Space is the Qwen2.5-7B orchestration service for SatQuery AI. It accepts a user request and one to four short-lived HTTPS signed image URLs. It does not accept uploads, Firebase credentials, local paths, manifests, or public workflow controls.
+This Hugging Face Space is the Qwen2.5-7B orchestration service for SatQuery AI. It accepts a user request, up to four physical inputs, and an optional authoritative manifest. Backend calls use short-lived HTTPS signed URLs; direct Gradio tests may use local files.
 
 ## Interface
 
-The internal Gradio interface contains exactly `User Request`, `Signed Image URL 1` through `Signed Image URL 4`, `Analyze`, and `Qwen Response`. The backend should create signed URLs and provide any trusted modality, timestamp, channel, and correspondence metadata through the internal request contract.
+The Gradio interface accepts `User Request`, up to four signed URL fields or direct files, and `Input Manifest JSON`. SAR pairing must be declared in the manifest; filenames are never used to infer VV/VH or temporal relationships. The backend should create signed URLs and provide trusted modality, timestamp, channel, and correspondence metadata.
 
 ## Architecture
 
@@ -24,7 +24,7 @@ The internal Gradio interface contains exactly `User Request`, `Signed Image URL
 - Optical plus SAR: GeoChat for each modality, then Qwen synthesis.
 - Bi-temporal imagery: M²CD, with semantic GeoChat inspection only when required by the task.
 - Dual SAR: M²CD change evidence followed by request-local region preprocessing and GeoChat when semantic interpretation is needed.
-- Four URLs: `VV T1`, `VH T1`, `VV T2`, `VH T2`, represented internally as SAR channel/time inputs.
+- Four physical files can represent two logical SAR observations when the manifest declares each VV/VH pair.
 
 Pseudo-RGB uses robust visualization normalization: `R = VV`, `G = VH`, and `B = (VV + VH) / 2`. It is not a substitute for quantitative SAR values.
 

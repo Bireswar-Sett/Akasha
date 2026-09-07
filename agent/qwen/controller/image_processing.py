@@ -113,6 +113,29 @@ def sar_to_pseudo_rgb_file(
     return str(output_path)
 
 
+def combine_sar_channels_file(
+    vv_path: str,
+    vh_path: str,
+) -> str:
+    """Create a private two-band raster from separate VV and VH files."""
+    import rasterio
+
+    with rasterio.open(vv_path) as vv_src, rasterio.open(vh_path) as vh_src:
+        if (vv_src.width, vv_src.height) != (vh_src.width, vh_src.height):
+            raise ValueError("VV and VH rasters must have identical dimensions.")
+        vv = vv_src.read(1)
+        vh = vh_src.read(1)
+        profile = vv_src.profile.copy()
+        profile.update(count=2, dtype=str(vv.dtype), driver="GTiff")
+
+    directory = Path(tempfile.mkdtemp(prefix="akasha_sar_pair_"))
+    output_path = directory / "vv_vh.tif"
+    with rasterio.open(output_path, "w", **profile) as destination:
+        destination.write(vv, 1)
+        destination.write(vh, 2)
+    return str(output_path)
+
+
 def extract_change_regions(
     probability_mask: np.ndarray,
     threshold: float,

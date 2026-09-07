@@ -36,6 +36,7 @@ class QwenRequestBuilder:
         image_urls: list[str],
         image_metadata: list[dict[str, Any]] | None = None,
         relationship: dict[str, Any] | None = None,
+        manifest: dict[str, Any] | None = None,
     ) -> QwenRequest:
         if not 1 <= len(image_urls) <= 4:
             raise HTTPException(
@@ -61,10 +62,42 @@ class QwenRequestBuilder:
             )
             for index, (url, item) in enumerate(zip(image_urls, metadata), start=1)
         )
+        metadata_payload: dict[str, Any] = {"images": [image.metadata for image in images], "pair_metadata": relationship}
+        if manifest is not None:
+            # The backend supplies the authoritative grouping.  References
+            # contain IDs only; signed URLs remain private to this request.
+            normalized_observations = []
+            physical_index = 0
+            for observation in manifest.get("observations", []):
+                item = dict(observation)
+                if item.get("modality") == "sar":
+                    sar = dict(item.get("sar") or {})
+                    for role in ("vv", "vh"):
+                        channel = dict(sar.get(role) or {})
+                        channel["id"] = f"image_{physical_index + 1}"
+                        sar[role] = channel
+                        physical_index += 1
+                    item["sar"] = sar
+                else:
+                    image = dict(item.get("image") or {})
+                    image["id"] = f"image_{physical_index + 1}"
+                    item["image"] = image
+                    physical_index += 1
+                normalized_observations.append(item)
+            if physical_index != len(images):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Manifest physical references must match the signed image inputs",
+                )
+            metadata_payload.update({
+                "observations": normalized_observations,
+                "relationship": manifest.get("relationship", relationship or {}),
+                "capabilities": manifest.get("capabilities", {}),
+            })
         return QwenRequest(
             user_request=user_request,
             images=images,
-            metadata={"images": [image.metadata for image in images], "pair_metadata": relationship},
+            metadata=metadata_payload,
         )
 
 
@@ -106,6 +139,7 @@ class QwenService:
         image_urls: list[str] | None = None,
         image_metadata: list[dict[str, Any]] | None = None,
         relationship: dict[str, Any] | None = None,
+        manifest: dict[str, Any] | None = None,
     ) -> str:
         urls = list(image_urls or [image_url])
         request = QwenRequestBuilder.build(
@@ -113,6 +147,7 @@ class QwenService:
             image_urls=urls,
             image_metadata=image_metadata,
             relationship=relationship,
+            manifest=manifest,
         )
         client = self._get_client()
         logger.info("Calling Qwen Space endpoint %s for %d image input(s)", self.api_name, len(urls))

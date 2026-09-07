@@ -12,7 +12,9 @@ from teochat_engine import TEOChatEngine
 engine = TEOChatEngine(
     model_path="jirvin16/TEOChat",
     device="cuda",
-    load_8bit=True,
+    load_8bit=False,
+    load_4bit=False,
+    quantization=None,
 )
 
 

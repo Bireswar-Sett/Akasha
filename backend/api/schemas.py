@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, model_validator
-from typing import List
+from typing import Any, Dict, List
 
 
 class AnalyzeRequest(BaseModel):
@@ -37,6 +37,10 @@ class AnalyzeRequest(BaseModel):
         max_length=4,
         description="Optional ordered Firebase Storage paths for multi-image Qwen analysis",
     )
+
+    # Trusted grouping metadata. References use image_1..image_4 IDs (or
+    # explicit storage paths resolved by the backend), never filenames.
+    manifest: Dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_image_inputs(self) -> "AnalyzeRequest":

@@ -123,6 +123,7 @@ const ChatInterface = ({
       const requestBody = {
         query: textToSend,
         image_path: uploadedImagePaths[0] || null,
+        image_paths: uploadedImagePaths,
         max_new_tokens: 256,
       };
 
