@@ -319,6 +319,10 @@ async def analyze_image(
         )
 
     except InputManifestCompatibilityError as exc:
+        logger.exception(
+            "Input manifest rejected"
+        )
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
@@ -332,8 +336,8 @@ async def analyze_image(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
-                "The uploaded imagery could not be converted into "
-                "a valid analysis manifest."
+                "Manifest construction failed: "
+                f"{type(exc).__name__}: {exc}"
             ),
         ) from exc
 

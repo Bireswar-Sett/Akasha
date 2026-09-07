@@ -5,11 +5,13 @@ This module converts physical Firebase Storage files into logical
 remote-sensing observations.
 
 Important:
-- Modality, polarization, timestamps, and relationship metadata come
-  from trusted Firebase Storage metadata.
+- Modality, polarization, timestamps, and observation IDs come from
+  trusted Firebase Storage metadata.
 - This module NEVER infers modality/polarization from filenames.
 - A SAR observation consists of exactly one VV file + one VH file.
 - The application supports at most four physical files.
+- Relationship information belongs to the logical observations, not
+  necessarily to every physical file.
 """
 
 from __future__ import annotations
@@ -39,13 +41,6 @@ _SUPPORTED_MODALITIES = {
 _SUPPORTED_POLARIZATIONS = {
     "VV",
     "VH",
-}
-
-_SUPPORTED_RELATIONSHIPS = {
-    "bi_temporal",
-    "temporal",
-    "cross_modal",
-    "single",
 }
 
 
@@ -81,10 +76,6 @@ def build_input_manifest(
         physical_files
         observations
         relationship
-
-    The function is intentionally conservative. If the backend cannot
-    establish a safe grouping from trusted metadata, it rejects the request
-    rather than guessing.
     """
 
     if not isinstance(file_metadata, list):
@@ -193,7 +184,7 @@ def build_input_manifest(
         )
 
     # -----------------------------------------------------------------------
-    # Optical + SAR observation
+    # Optical + SAR
     #
     # Physical files:
     #     optical
@@ -203,6 +194,10 @@ def build_input_manifest(
     # Logical observations:
     #     observation_optical
     #     observation_sar
+    #
+    # IMPORTANT:
+    # Relationship metadata such as co-registration is NOT required
+    # to be duplicated on all three physical files.
     # -----------------------------------------------------------------------
 
     if (
@@ -211,7 +206,7 @@ def build_input_manifest(
         and len(sar_indices) == 2
     ):
         relationship = _cross_modal_relationship(
-            file_metadata
+            file_metadata=file_metadata,
         )
 
         optical_index = optical_indices[0]
@@ -256,10 +251,6 @@ def build_input_manifest(
     # -----------------------------------------------------------------------
 
     if len(file_metadata) == 4 and len(sar_indices) == 4:
-        relationship = _temporal_relationship(
-            file_metadata
-        )
-
         grouped = _sar_groups(
             sar_indices=sar_indices,
             metadata=file_metadata,
@@ -268,7 +259,6 @@ def build_input_manifest(
         if len(grouped) != 2:
             raise InputManifestCompatibilityError(_SAFE_ERROR)
 
-        # Deterministic chronological ordering when timestamps permit it.
         ordered_groups = _order_sar_groups(
             grouped,
             file_metadata,
@@ -285,6 +275,10 @@ def build_input_manifest(
         ]
 
         _validate_temporal_observations(observations)
+
+        relationship = _temporal_relationship(
+            file_metadata=file_metadata,
+        )
 
         return _manifest(
             files=files,
@@ -419,10 +413,7 @@ def _sar_observation(
 
         polarization_to_index[polarization] = index
 
-    if set(polarization_to_index) != {
-        "VV",
-        "VH",
-    }:
+    if set(polarization_to_index) != {"VV", "VH"}:
         raise InputManifestCompatibilityError(_SAFE_ERROR)
 
     timestamp_values = {
@@ -487,8 +478,8 @@ def _sar_groups(
     Every four-file dual-SAR request must provide an explicit
     `observation_id` in trusted Storage metadata.
 
-    The frontend assigns the same observation_id to VV/VH belonging to
-    the same acquisition.
+    The frontend assigns the same observation_id to VV/VH belonging
+    to the same acquisition.
     """
 
     groups: dict[str, list[int]] = defaultdict(list)
@@ -498,32 +489,22 @@ def _sar_groups(
             "observation_id"
         )
 
-        if not isinstance(
-            observation_id,
-            str,
-        ) or not observation_id.strip():
-            raise InputManifestCompatibilityError(
-                _SAFE_ERROR
-            )
+        if not isinstance(observation_id, str) or not observation_id.strip():
+            raise InputManifestCompatibilityError(_SAFE_ERROR)
 
         normalized_id = observation_id.strip()
-
         groups[normalized_id].append(index)
 
     # Exactly two logical SAR observations are required.
     if len(groups) != 2:
-        raise InputManifestCompatibilityError(
-            _SAFE_ERROR
-        )
+        raise InputManifestCompatibilityError(_SAFE_ERROR)
 
     # Every logical SAR observation must have exactly two physical files.
     if any(
         len(indices) != 2
         for indices in groups.values()
     ):
-        raise InputManifestCompatibilityError(
-            _SAFE_ERROR
-        )
+        raise InputManifestCompatibilityError(_SAFE_ERROR)
 
     return list(groups.values())
 
@@ -536,7 +517,7 @@ def _order_sar_groups(
     Put SAR observations in acquisition-time order.
 
     If timestamps cannot be parsed into comparable datetime values,
-    retain the grouping order instead of guessing.
+    retain grouping order instead of guessing.
     """
 
     decorated = []
@@ -550,15 +531,11 @@ def _order_sar_groups(
         }
 
         if len(timestamps) != 1:
-            raise InputManifestCompatibilityError(
-                _SAFE_ERROR
-            )
+            raise InputManifestCompatibilityError(_SAFE_ERROR)
 
         timestamp = next(iter(timestamps))
 
-        parsed = _parse_timestamp(
-            timestamp
-        )
+        parsed = _parse_timestamp(timestamp)
 
         decorated.append(
             (
@@ -590,87 +567,96 @@ def _order_sar_groups(
 
 
 def _temporal_relationship(
-    metadata: list[dict[str, Any]],
+    file_metadata: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """
-    Validate a trusted bi-temporal relationship.
+    metadata = file_metadata
 
-    The backend does not infer spatial correspondence merely because there
-    are two files. That relationship must be explicitly supplied.
-    """
+    timestamps = [
+        item.get("acquisition_time")
+        for item in metadata
+    ]
 
-    relationship_type = _consistent(
-        metadata,
-        "relationship_type",
-    )
-
-    if relationship_type not in {
-        "bi_temporal",
-        "temporal",
-    }:
+    if any(timestamp is None for timestamp in timestamps):
         raise InputManifestCompatibilityError(
-            _SAFE_ERROR
+            "Temporal inputs require acquisition_time metadata for every "
+            "physical file."
         )
 
-    if not _all_true(
+    relationship: dict[str, Any] = {
+        "type": "temporal",
+    }
+
+    spatially_corresponding = _uniform_boolean(
         metadata,
         "spatially_corresponding",
-    ):
-        raise InputManifestCompatibilityError(
-            _SAFE_ERROR
-        )
+    )
 
-    if any(
-        _normalize_timestamp(
-            item.get("acquisition_time")
-        ) is None
-        for item in metadata
-    ):
-        raise InputManifestCompatibilityError(
-            _SAFE_ERROR
-        )
+    if spatially_corresponding is not None:
+        relationship["spatially_corresponding"] = spatially_corresponding
 
-    return {
-        "type": "bi_temporal",
-        "spatially_corresponding": True,
-    }
+    same_geographic_area = _uniform_boolean(
+        metadata,
+        "same_geographic_area",
+    )
+
+    if same_geographic_area is not None:
+        relationship["same_geographic_area"] = same_geographic_area
+
+    return relationship
 
 
 def _cross_modal_relationship(
-    metadata: list[dict[str, Any]],
+    file_metadata: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """
-    Validate a trusted optical-SAR relationship.
+    Build the logical relationship between one optical observation
+    and one SAR observation.
+
+    The physical configuration itself establishes that this is a
+    cross-modal request:
+
+        optical
+        +
+        SAR(VV,VH)
+
+    Relationship-level metadata such as co-registration is optional.
+    It is preserved when consistently supplied by trusted metadata.
     """
 
-    relationship_type = _consistent(
-        metadata,
-        "relationship_type",
-    )
-
-    if relationship_type != "cross_modal":
-        raise InputManifestCompatibilityError(
-            _SAFE_ERROR
-        )
-
-    if not _all_true(
-        metadata,
-        "co_registered",
-    ):
-        raise InputManifestCompatibilityError(
-            _SAFE_ERROR
-        )
+    metadata = file_metadata
 
     relationship = {
         "type": "cross_modal",
-        "co_registered": True,
     }
 
-    if _all_true(
+    relationship_type_values = {
+        item.get("relationship_type")
+        for item in metadata
+        if item.get("relationship_type") is not None
+    }
+
+    # Explicit relationship metadata may exist, but it must not
+    # contradict the structurally determined cross-modal relationship.
+    if relationship_type_values and relationship_type_values != {
+        "cross_modal"
+    }:
+        raise InputManifestCompatibilityError(_SAFE_ERROR)
+
+    co_registered = _uniform_boolean(
+        metadata,
+        "co_registered",
+    )
+
+    if co_registered is not None:
+        relationship["co_registered"] = co_registered
+
+    same_geographic_area = _uniform_boolean(
         metadata,
         "same_geographic_area",
-    ):
-        relationship["same_geographic_area"] = True
+    )
+
+    if same_geographic_area is not None:
+        relationship["same_geographic_area"] = same_geographic_area
 
     return relationship
 
@@ -687,8 +673,7 @@ def _validate_temporal_order(
     """
     Ensure two optical observations have distinct timestamps.
 
-    The images are still allowed to be provided in arbitrary upload order;
-    ordering itself is handled later by the controller/executor.
+    The images are allowed to arrive in arbitrary upload order.
     """
 
     timestamps = [
@@ -698,13 +683,8 @@ def _validate_temporal_order(
         for item in metadata
     ]
 
-    if any(
-        timestamp is None
-        for timestamp in timestamps
-    ):
-        raise InputManifestCompatibilityError(
-            _SAFE_ERROR
-        )
+    if any(timestamp is None for timestamp in timestamps):
+        raise InputManifestCompatibilityError(_SAFE_ERROR)
 
     if len(set(timestamps)) != len(timestamps):
         raise InputManifestCompatibilityError(
@@ -720,13 +700,8 @@ def _validate_temporal_observations(
         for observation in observations
     ]
 
-    if any(
-        timestamp is None
-        for timestamp in timestamps
-    ):
-        raise InputManifestCompatibilityError(
-            _SAFE_ERROR
-        )
+    if any(timestamp is None for timestamp in timestamps):
+        raise InputManifestCompatibilityError(_SAFE_ERROR)
 
     if len(set(timestamps)) != len(timestamps):
         raise InputManifestCompatibilityError(
@@ -734,29 +709,45 @@ def _validate_temporal_observations(
         )
 
 
-def _consistent(
+def _uniform_boolean(
     metadata: list[dict[str, Any]],
     key: str,
-) -> Any:
-    values = {
+) -> bool | None:
+    """
+    Return a boolean only when the supplied relationship metadata
+    is explicit and consistent.
+
+    Examples:
+
+        [None, None, None] -> None
+        [True, True, True] -> True
+        [False, False, False] -> False
+        [True, None, True] -> None
+        [True, False, True] -> None
+
+    Absence or partial presence does not make the underlying image
+    combination invalid.
+    """
+
+    values = [
         item.get(key)
         for item in metadata
-    }
+        if item.get(key) is not None
+    ]
 
-    if len(values) != 1:
+    if not values:
         return None
 
-    return values.pop()
+    normalized = set(values)
 
+    if normalized == {True}:
+        return True
 
-def _all_true(
-    metadata: list[dict[str, Any]],
-    key: str,
-) -> bool:
-    return all(
-        item.get(key) is True
-        for item in metadata
-    )
+    if normalized == {False}:
+        return False
+
+    # Conflicting or malformed relationship metadata.
+    raise InputManifestCompatibilityError(_SAFE_ERROR)
 
 
 def _normal_modality(
@@ -820,10 +811,7 @@ def _parse_timestamp(
 
     try:
         return datetime.fromisoformat(
-            value.replace(
-                "Z",
-                "+00:00",
-            )
+            value.replace("Z", "+00:00")
         )
     except (
         TypeError,
