@@ -14,6 +14,7 @@ from qwen.controller.services import MAX_CONTROLLER_STEPS, validate_config
 
 validate_config()
 controller = QwenController(qwen=QwenEngine(), executor=ToolExecutor(), max_steps=MAX_CONTROLLER_STEPS)
+SPACE_VERSION = "manifest-orchestration-v2"
 
 
 @spaces.GPU(duration=120)
@@ -26,15 +27,16 @@ def analyze(user_request: str, url_1: str = "", url_2: str = "", url_3: str = ""
             for item in files
             if item
         )
-    urls = urls[:4]
     try:
+        if len(urls) > 4:
+            raise ValueError("at most four physical image files are supported")
         metadata = json.loads(manifest_json) if manifest_json.strip() else {}
         if not isinstance(metadata, dict):
             raise ValueError("Manifest must be a JSON object")
+        if any(url.startswith("http://") for url in urls):
+            raise ValueError("Remote image references must use HTTPS")
         local_paths = [url for url in urls if not url.startswith(("http://", "https://"))]
         signed_urls = [url for url in urls if url.startswith(("http://", "https://"))]
-        if len(urls) > 1 and "observations" not in metadata and metadata.get("sar_channels") is None:
-            raise ValueError("Input Manifest JSON is required when multiple physical files are supplied")
         manifest = build_input_manifest(urls, raw_manifest=metadata)
         request = AnalysisRequest(
             user_request=user_request,
@@ -43,7 +45,9 @@ def analyze(user_request: str, url_1: str = "", url_2: str = "", url_3: str = ""
             manifest=manifest,
             metadata=metadata,
         )
-        return json.dumps(controller.run_request(request), ensure_ascii=False, indent=2, default=str)
+        response = controller.run_request(request)
+        response["space_version"] = SPACE_VERSION
+        return json.dumps(response, ensure_ascii=False, indent=2, default=str)
     except ValueError as exc:
         raise gr.Error(str(exc)) from exc
     except Exception as exc:
@@ -58,7 +62,7 @@ demo = gr.Interface(
         gr.Textbox(label="Signed Image URL 2"),
         gr.Textbox(label="Signed Image URL 3"),
         gr.Textbox(label="Signed Image URL 4"),
-        gr.Textbox(label="Input Manifest JSON (required for SAR pairing)", lines=8),
+        gr.Textbox(label="Input Manifest JSON (required for multiple physical files)", lines=8),
         gr.File(label="Direct physical files (up to 4)", file_count="multiple", type="filepath"),
     ],
     outputs=gr.Code(label="Qwen Response", language="json"),

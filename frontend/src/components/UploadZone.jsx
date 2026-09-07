@@ -5,7 +5,7 @@ import { UploadCloud, Image as ImageIcon, X, Plus } from 'lucide-react';
 const UploadZone = ({ onFileSelect, selectedFiles }) => {
   const onDrop = useCallback(acceptedFiles => {
     if (acceptedFiles && acceptedFiles.length > 0) {
-      onFileSelect([...selectedFiles, ...acceptedFiles]);
+      onFileSelect([...selectedFiles, ...acceptedFiles].slice(0, 4));
     }
   }, [onFileSelect, selectedFiles]);
 

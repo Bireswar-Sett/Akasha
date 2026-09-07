@@ -61,38 +61,81 @@ class QwenRequestBuilder:
             )
             for index, (url, item) in enumerate(zip(image_urls, metadata), start=1)
         )
-        metadata_payload: dict[str, Any] = {"images": [image.metadata for image in images], "pair_metadata": relationship}
-        if manifest is not None:
-            # The backend supplies the authoritative grouping.  References
-            # contain IDs only; signed URLs remain private to this request.
-            normalized_observations = []
-            physical_index = 0
-            for observation in manifest.get("observations", []):
-                item = dict(observation)
-                if item.get("modality") == "sar":
-                    sar = dict(item.get("sar") or {})
-                    for role in ("vv", "vh"):
-                        channel = dict(sar.get(role) or {})
-                        channel["id"] = f"image_{physical_index + 1}"
-                        sar[role] = channel
-                        physical_index += 1
-                    item["sar"] = sar
-                else:
-                    image = dict(item.get("image") or {})
-                    image["id"] = f"image_{physical_index + 1}"
-                    item["image"] = image
-                    physical_index += 1
-                normalized_observations.append(item)
-            if physical_index != len(images):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Manifest physical references must match the signed image inputs",
-                )
-            metadata_payload.update({
-                "observations": normalized_observations,
-                "relationship": manifest.get("relationship", relationship or {}),
-                "capabilities": manifest.get("capabilities", {}),
-            })
+        if manifest is None and len(images) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Input Manifest JSON is required when multiple physical files are supplied",
+            )
+
+        # The backend supplies the authoritative grouping. References contain
+        # stable IDs only; signed URLs remain private to this request.
+        if manifest is None:
+            manifest = {
+                "physical_files": [{"id": "file_0"}],
+                "observations": [{"id": "observation_1", "modality": "optical", "image": {"id": "file_0"}}],
+                "relationship": {"type": "single"},
+            }
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("observations"), list):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Input Manifest JSON must contain observations")
+        physical_files = manifest.get("physical_files") or [{"id": f"file_{index}"} for index in range(len(images))]
+        if len(physical_files) != len(images):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Manifest physical references must match the signed image inputs",
+            )
+        file_ids = []
+        sanitized_files = []
+        for index, descriptor in enumerate(physical_files):
+            descriptor = dict(descriptor)
+            file_id = str(descriptor.get("id") or f"file_{index}")
+            if file_id in file_ids:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Manifest physical file IDs must be unique")
+            file_ids.append(file_id)
+            sanitized_files.append({key: value for key, value in descriptor.items() if key not in {"url", "path"}} | {"id": file_id})
+
+        def sanitize_ref(value: Any) -> dict[str, Any]:
+            item = dict(value) if isinstance(value, dict) else {"id": value}
+            if "physical_index" in item:
+                index = item.pop("physical_index")
+                if not isinstance(index, int) or not 0 <= index < len(file_ids):
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Manifest physical reference is invalid")
+                item["id"] = file_ids[index]
+            ref_id = str(item.get("id") or item.get("file_id") or "")
+            # Accept the legacy image_1..image_4 transport aliases but emit
+            # only canonical file IDs on the wire.
+            if ref_id.startswith("image_") and ref_id[6:].isdigit():
+                index = int(ref_id[6:]) - 1
+                if 0 <= index < len(file_ids):
+                    ref_id = file_ids[index]
+                    item["id"] = ref_id
+            if ref_id not in file_ids:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Manifest references an unknown physical file")
+            return {key: value for key, value in item.items() if key not in {"url", "path", "physical_index", "file_id"}} | {"id": ref_id}
+
+        normalized_observations = []
+        for observation in manifest["observations"]:
+            item = dict(observation)
+            if item.get("modality") == "sar":
+                sar = dict(item.get("sar") or {})
+                for role in ("vv", "vh"):
+                    if role not in sar:
+                        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="SAR observations require VV and VH")
+                    sar[role] = sanitize_ref(sar[role])
+                item["sar"] = sar
+                item.pop("image", None)
+            else:
+                if "image" not in item:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Non-SAR observations require an image")
+                item["image"] = sanitize_ref(item["image"])
+                item.pop("sar", None)
+            normalized_observations.append(item)
+        metadata_payload: dict[str, Any] = {
+            "physical_files": sanitized_files,
+            "observations": normalized_observations,
+            "relationship": manifest.get("relationship", relationship or {"type": "single"}),
+            "metadata": manifest.get("metadata", {}),
+        }
+        metadata_payload["capabilities"] = manifest.get("capabilities", {})
         return QwenRequest(
             user_request=user_request,
             images=images,

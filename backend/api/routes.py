@@ -156,10 +156,21 @@ async def analyze_image(
     # 4. Call Qwen Gradio Space
     logger.info("Calling Qwen Space")
 
+    if request.manifest is None and len(signed_urls) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Input Manifest JSON is required when multiple physical files are supplied",
+        )
+    manifest = request.manifest or {
+        "physical_files": [{"id": "file_0"}],
+        "observations": [{"id": "observation_1", "modality": "optical", "image": {"id": "file_0"}}],
+        "relationship": {"type": "single"},
+    }
     qwen_kwargs = {
         "user_message": request.query,
         "image_url": signed_url,
         "max_new_tokens": request.max_new_tokens,
+        "manifest": manifest,
     }
     if len(signed_urls) > 1:
         qwen_kwargs["image_urls"] = signed_urls
@@ -167,8 +178,6 @@ async def analyze_image(
     # production Qwen service with trusted Storage metadata.
     if type(qwen_service) is QwenService and type(storage_service) is FirebaseStorageService:
         qwen_kwargs["image_metadata"] = [storage_service.get_image_metadata(path) for path in clean_paths]
-    if request.manifest is not None:
-        qwen_kwargs["manifest"] = request.manifest
 
     answer = qwen_service.analyze(**qwen_kwargs)
 

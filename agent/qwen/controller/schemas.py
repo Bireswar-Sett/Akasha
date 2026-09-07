@@ -76,6 +76,10 @@ class ImageReference(BaseModel):
 
     image_id: str
     url: str
+    role: str | None = None
+    filename: str | None = None
+    format: str | None = None
+    size: int | None = None
     modality: str | None = None
     timestamp: str | None = None
     bands: list[str] | None = None
@@ -105,10 +109,10 @@ class SARFiles(BaseModel):
 class RelationshipMetadata(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    type: Literal["single", "temporal", "bi_temporal", "cross_modal", "mixed"] | None = None
+    type: Literal["single", "temporal", "temporal_sequence", "bi_temporal", "cross_modal", "heterogeneous_temporal", "mixed"] | None = None
     spatially_corresponding: bool | None = None
     co_registered: bool | None = None
-    relationship: Literal["single", "temporal", "cross_modal", "mixed"] | None = None
+    relationship: Literal["single", "temporal", "temporal_sequence", "cross_modal", "heterogeneous_temporal", "mixed"] | None = None
 
     @property
     def kind(self) -> str | None:
@@ -144,21 +148,58 @@ class Observation(BaseModel):
 class InputManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # The physical registry is intentionally explicit.  Observations are the
+    # semantic view; this registry is the transport/resource view.
+    physical_files: list[ImageReference] = Field(default_factory=list, max_length=4)
     observations: list[Observation] = Field(min_length=1, max_length=4)
     relationship: RelationshipMetadata = Field(default_factory=RelationshipMetadata)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def populate_physical_registry(cls, values: Any) -> Any:
+        if not isinstance(values, dict) or values.get("physical_files"):
+            return values
+        observations = values.get("observations") or []
+        physical_files = []
+        seen = set()
+        for observation in observations:
+            if not isinstance(observation, Observation):
+                continue
+            for image in observation.physical_files:
+                if image.image_id not in seen:
+                    physical_files.append(image)
+                    seen.add(image.image_id)
+        values["physical_files"] = physical_files
+        return values
+
     @model_validator(mode="after")
     def validate_manifest(self) -> "InputManifest":
+        if not self.physical_files:
+            self.physical_files = []
+            seen = set()
+            for observation in self.observations:
+                for image in observation.physical_files:
+                    if image.image_id not in seen:
+                        self.physical_files.append(image)
+                        seen.add(image.image_id)
         ids = [observation.id for observation in self.observations]
         if len(ids) != len(set(ids)):
             raise ValueError("observation IDs must be unique")
-        physical_count = sum(len(observation.physical_files) for observation in self.observations)
+        referenced = [image.image_id for observation in self.observations for image in observation.physical_files]
+        if len(referenced) != len(set(referenced)):
+            raise ValueError("a physical file cannot be assigned more than once")
+        registry_ids = [image.image_id for image in self.physical_files]
+        if len(registry_ids) != len(set(registry_ids)):
+            raise ValueError("physical file IDs must be unique")
+        if set(referenced) != set(registry_ids):
+            raise ValueError("physical file registry must match observation references")
+        physical_count = len(self.physical_files)
         if physical_count > 4:
             raise ValueError("at most four physical image files are supported")
         relation = self.relationship.kind
         modalities = [observation.modality for observation in self.observations]
-        if relation in {"temporal", "bi_temporal"}:
+        if relation in {"temporal", "temporal_sequence", "bi_temporal", "heterogeneous_temporal"}:
             if len(self.observations) != 2:
                 raise ValueError("temporal relationships require exactly two observations")
             if not all(observation.acquisition_time for observation in self.observations):
@@ -167,15 +208,6 @@ class InputManifest(BaseModel):
             if len(self.observations) != 2 or set(modalities) not in ({"optical", "sar"}, {"multispectral", "sar"}):
                 raise ValueError("cross_modal relationships require one optical/multispectral and one SAR observation")
         return self
-
-    @property
-    def physical_files(self) -> tuple[ImageReference, ...]:
-        return tuple(
-            image
-            for observation in self.observations
-            for image in observation.physical_files
-        )
-
 
 def build_input_manifest(
     physical_refs: list[str],
@@ -204,9 +236,24 @@ def build_input_manifest(
 
     payload = raw_manifest if isinstance(raw_manifest, dict) else (metadata or {})
     observation_payloads = payload.get("observations")
+    # Legacy backend metadata can describe separate optical observations, but
+    # it cannot describe SAR channel pairing.  Convert only the unambiguous
+    # optical form; callers must use observations/sar.vv/sar.vh for SAR.
+    if observation_payloads is None and isinstance(payload.get("images"), list):
+        image_items = payload["images"]
+        if all(isinstance(item, dict) and item.get("modality") in {"optical", "multispectral"} for item in image_items):
+            observation_payloads = [
+                {
+                    "id": str(item.get("id") or f"observation_{index + 1}"),
+                    "modality": item.get("modality"),
+                    "acquisition_time": item.get("acquisition_time"),
+                    "image": {"id": item.get("id") or f"file_{index}", "physical_index": index},
+                }
+                for index, item in enumerate(image_items)
+            ]
     if observation_payloads is None:
-        # Keep the old explicit channel-role contract usable for trusted
-        # callers, but do not infer it from filenames or file extensions.
+        # The four-file SAR shortcut is retained only as an explicit trusted
+        # contract.  No filename or file-count inference occurs here.
         if payload.get("sar_channels") == ["vv_t1", "vh_t1", "vv_t2", "vh_t2"] and len(refs) == 4:
             observation_payloads = [
                 {"id": "observation_t1", "modality": "sar", "acquisition_time": "t1", "sar": {"vv": {"physical_index": 0}, "vh": {"physical_index": 1}}},
@@ -215,17 +262,21 @@ def build_input_manifest(
         elif len(refs) == 1:
             observation_payloads = [{"id": "observation_1", "modality": "optical", "image": {"physical_index": 0}}]
         else:
-            # Keep older API callers on a structured incompatibility path.
-            # The Gradio adapter rejects this ambiguous shape explicitly.
-            observation_payloads = [
-                {"id": f"observation_{index}", "modality": "optical", "image": {"physical_index": index - 1}}
-                for index in range(1, len(refs) + 1)
-            ]
+            raise ValueError("Input Manifest JSON is required when multiple physical files are supplied")
 
     if not isinstance(observation_payloads, list):
         raise ValueError("manifest observations must be a list")
 
-    id_to_ref = {f"image_{index + 1}": value for index, value in enumerate(refs)}
+    registry = payload.get("physical_files")
+    if registry is not None and (not isinstance(registry, list) or len(registry) != len(refs)):
+        raise ValueError("manifest physical_files must match the physical inputs")
+    id_to_ref = {}
+    for index, value in enumerate(refs):
+        descriptor = registry[index] if isinstance(registry, list) else {}
+        if not isinstance(descriptor, dict):
+            raise ValueError("manifest physical_files entries must be objects")
+        ref_id = str(descriptor.get("id") or f"file_{index}")
+        id_to_ref[ref_id] = value
     if authorized_refs:
         id_to_ref = {key: value for key, value in authorized_refs.items() if value}
 
@@ -239,9 +290,14 @@ def build_input_manifest(
                 authorized_items = [(key, value) for key, value in authorized_refs.items() if value]
                 ref_id, url = authorized_items[physical_index]
             else:
-                ref_id, url = f"image_{physical_index + 1}", refs[physical_index]
+                ref_id = list(id_to_ref)[physical_index]
+                url = refs[physical_index]
         else:
-            ref_id = str(item.get("id", fallback))
+            ref_id = str(item.get("id") or item.get("file_id") or fallback)
+            if ref_id.startswith("image_") and ref_id[6:].isdigit() and not authorized_refs:
+                alias_index = int(ref_id[6:]) - 1
+                if 0 <= alias_index < len(refs):
+                    ref_id = list(id_to_ref)[alias_index]
             url = item.get("url") or item.get("path") or id_to_ref.get(ref_id)
             if not url:
                 if authorized_refs:
@@ -254,6 +310,10 @@ def build_input_manifest(
         return ImageReference(
             image_id=ref_id,
             url=url,
+            role=item.get("role"),
+            filename=item.get("filename"),
+            format=item.get("format"),
+            size=item.get("size"),
             modality=item.get("modality"),
             timestamp=item.get("timestamp"),
             bands=item.get("bands"),
@@ -296,6 +356,20 @@ def build_input_manifest(
 
     relationship = payload.get("relationship") or {}
     return InputManifest(
+        physical_files=[
+            ImageReference(
+                image_id=(item.get("id") if isinstance(item, dict) else None) or f"file_{index}",
+                url=refs[index],
+                role=item.get("role") if isinstance(item, dict) else None,
+                filename=item.get("filename") if isinstance(item, dict) else None,
+                format=item.get("format") if isinstance(item, dict) else None,
+                size=item.get("size") if isinstance(item, dict) else None,
+                modality=item.get("modality") if isinstance(item, dict) else None,
+                timestamp=item.get("timestamp") if isinstance(item, dict) else None,
+                bands=item.get("bands") if isinstance(item, dict) else None,
+            )
+            for index, item in enumerate(registry or [{} for _ in refs])
+        ],
         observations=observations,
         relationship=RelationshipMetadata.model_validate(relationship),
         metadata=payload.get("metadata") or {},
