@@ -152,6 +152,7 @@ def _run_controller(
 # Public Gradio API
 # ----------------------------------------------------------------------
 
+@spaces.GPU
 def analyze(
     user_request: str,
     url_1: str = "",

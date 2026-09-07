@@ -414,7 +414,7 @@ class TaskPlanner:
                             "image_ref": "artifact:pseudo_rgb",
                             "prompt": prompt,
                         },
-                        depends_on=[1],
+                        depends_on=[0],
                     ),
                 ]
 
@@ -502,7 +502,7 @@ class TaskPlanner:
                             "image_ref": "artifact:pseudo_rgb",
                             "prompt": prompt,
                         },
-                        depends_on=[2],
+                        depends_on=[1],
                     ),
                 ]
 
@@ -533,7 +533,7 @@ class TaskPlanner:
                         "image_ref": "artifact:pseudo_rgb",
                         "prompt": prompt,
                     },
-                    depends_on=[2],
+                    depends_on=[1],
                 ),
             ]
 
@@ -646,7 +646,7 @@ class TaskPlanner:
                     )
                 )
 
-                depends_on = [1]
+                depends_on = [0]
             else:
                 calls.append(
                     ToolCall(
@@ -665,7 +665,7 @@ class TaskPlanner:
                     )
                 )
 
-                depends_on = [1]
+                depends_on = [0]
 
             calls.extend(
                 [
@@ -805,7 +805,7 @@ class TaskPlanner:
                             ),
                             "bounding_box": sar_box.model_dump(),
                         },
-                        depends_on=[2],
+                        depends_on=[1],
                         bounding_boxes=[sar_box],
                     ),
                 ]
@@ -851,7 +851,7 @@ class TaskPlanner:
                             ),
                             "bounding_box": box.model_dump(),
                         },
-                        depends_on=[len(calls)],
+                        depends_on=[len(calls)-1],
                         bounding_boxes=[box],
                     )
                 )
