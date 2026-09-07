@@ -644,7 +644,7 @@ const buildClientManifest = descriptors => {
   }
 
   return {
-    physical_files,
+    physical_files: physicalFiles,
     observations: [
       ...observationMap.values()
     ],
@@ -1204,9 +1204,11 @@ const ChatInterface = ({
         !user &&
         !isDemoMode
       ) {
-        throw new Error(
+        const authError = new Error(
           'You must be signed in to analyze imagery.'
         );
+        authError.isAuthError = true;
+        throw authError;
       }
 
       const currentFirebaseUser =
@@ -1220,9 +1222,11 @@ const ChatInterface = ({
             : null;
 
       if (!idToken) {
-        throw new Error(
+        const authError = new Error(
           'Authentication required before analysis can run.'
         );
+        authError.isAuthError = true;
+        throw authError;
       }
 
 
@@ -1338,9 +1342,13 @@ const ChatInterface = ({
       const isTimeout =
         error?.code === 'ECONNABORTED';
 
+      const isAuthError =
+        error?.isAuthError === true;
+
       const isOffline =
         !error?.response &&
-        !isTimeout;
+        !isTimeout &&
+        !isAuthError;
 
       let errorMessage;
 
@@ -1369,6 +1377,10 @@ const ChatInterface = ({
       } else if (isTimeout) {
         errorMessage =
           'Analysis is taking longer than expected. The API is reachable; please try again shortly.';
+
+      } else if (isAuthError) {
+        errorMessage =
+          error.message;
 
       } else if (isOffline) {
         errorMessage =
