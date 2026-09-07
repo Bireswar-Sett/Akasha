@@ -8,7 +8,6 @@ from typing import Any, Optional
 from fastapi import HTTPException, status
 
 from config import get_settings
-from services.qwen import generate_local_satellite_analysis
 
 logger = logging.getLogger("akasha.qwen")
 
@@ -159,6 +158,10 @@ class QwenService:
                 "url_2": request.images[1].signed_url if len(request.images) > 1 else "",
                 "url_3": request.images[2].signed_url if len(request.images) > 2 else "",
                 "url_4": request.images[3].signed_url if len(request.images) > 3 else "",
+                # The Space now exposes the normalized-manifest and direct
+                # upload inputs as part of its public Gradio contract.
+                "manifest_json": json.dumps(request.metadata, ensure_ascii=False),
+                "physical_files": [],
                 "api_name": self.api_name,
             }
             result = client.predict(**arguments)
@@ -173,7 +176,9 @@ class QwenService:
             return self._local_fallback(request, max_new_tokens, status_code=status.HTTP_504_GATEWAY_TIMEOUT, cause=exc)
         except Exception as exc:
             message = str(exc)
-            logger.error("Qwen Gradio inference failed: %s", type(exc).__name__)
+            # Keep signed URLs and response bodies out of logs, but retain the
+            # exception class/message needed to diagnose endpoint mismatches.
+            logger.error("Qwen Gradio inference failed: %s: %s", type(exc).__name__, str(exc)[:300])
             if "ZeroGPU runs limit" in message or "ZeroGPU" in message:
                 return self._local_fallback(request, max_new_tokens, status_code=status.HTTP_429_TOO_MANY_REQUESTS, cause=exc)
             return self._local_fallback(request, max_new_tokens, cause=exc)
@@ -191,13 +196,13 @@ class QwenService:
 
     @staticmethod
     def _local_fallback(request: QwenRequest, max_new_tokens: int, status_code: int | None = None, cause: Exception | None = None) -> str:
-        images = [{"filename": image.image_id, "bytes": b""} for image in request.images]
-        fallback = generate_local_satellite_analysis(request.user_request, images)
-        if fallback and fallback.get("response"):
-            return str(fallback["response"]).strip()
-        if status_code is not None:
-            raise HTTPException(status_code=status_code, detail="Qwen inference is temporarily unavailable") from cause
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="AI analysis is temporarily unavailable") from cause
+        # Never turn an upstream inference failure into fabricated visual
+        # findings. The previous local fallback produced confident-looking
+        # reports for zero-byte placeholder images.
+        raise HTTPException(
+            status_code=status_code or status.HTTP_502_BAD_GATEWAY,
+            detail="Qwen inference is temporarily unavailable; inspect backend logs for the upstream error.",
+        ) from cause
 
 
 _qwen_service_instance: Optional[QwenService] = None

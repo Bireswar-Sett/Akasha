@@ -6,7 +6,6 @@ from typing import Any
 from qwen.controller.schemas import (
     AnalysisRequest,
     BoundingBox,
-    ImageReference,
     InputConfiguration,
     Observation,
     TaskType,
@@ -127,26 +126,6 @@ class TaskPlanner:
         ]
 
     @staticmethod
-    def _legacy_images(request: AnalysisRequest) -> list[ImageReference]:
-        metadata_images = request.metadata.get("images", [])
-        metadata_by_id = {
-            str(item.get("id", index)): item
-            for index, item in enumerate(metadata_images)
-            if isinstance(item, dict)
-        }
-        return [
-            ImageReference(
-                image_id=f"image_{index + 1}",
-                url=url,
-                modality=metadata_by_id.get(f"image_{index + 1}", {}).get("modality"),
-                timestamp=metadata_by_id.get(f"image_{index + 1}", {}).get("acquisition_time"),
-                bands=metadata_by_id.get(f"image_{index + 1}", {}).get("bands"),
-                spatially_corresponding=(request.metadata.get("pair_metadata") or {}).get("spatially_corresponding"),
-            )
-            for index, url in enumerate(request.signed_image_urls)
-        ]
-
-    @staticmethod
     def _task_type(text: str) -> TaskType:
         value = text.lower()
         if re.search(r"\b(describe|caption|scene)\b", value):
@@ -210,35 +189,33 @@ class TaskPlanner:
             if observation.modality == "sar":
                 vv, vh = observation.physical_files
                 return [
-                    ToolCall(name="pseudo_rgb", purpose="Prepare SAR for semantic vision", operation="sar_to_pseudo_rgb", arguments={"vv_ref": vv.image_id, "vh_ref": vh.image_id}),
+                    ToolCall(name="pseudo_rgb", purpose="Prepare SAR for semantic vision", operation="sar_to_pseudo_rgb", arguments={"observation_id": observation.id}),
                     ToolCall(name="geochat", purpose="Interpret the requested image", operation="single_image_analysis", arguments={"image_ref": "artifact:pseudo_rgb", "prompt": prompt}, depends_on=[1]),
                 ]
-            return [ToolCall(name="geochat", purpose="Interpret the requested image", operation="single_image_analysis", arguments={"image_ref": observation.image.image_id, "prompt": prompt})]
+            return [ToolCall(name="geochat", purpose="Interpret the requested image", operation="single_image_analysis", arguments={"observation_id": observation.id, "prompt": prompt})]
         if configuration == InputConfiguration.OPTICAL_SAR:
             optical = next(observation for observation in observations if observation.modality in {"optical", "multispectral"})
             sar = next(observation for observation in observations if observation.modality == "sar")
             vv, vh = sar.physical_files
             if task_type in {TaskType.CHANGE_ANALYSIS, TaskType.TEMPORAL_SEMANTIC}:
                 return [
-                    ToolCall(name="pseudo_rgb", purpose="Prepare SAR evidence", operation="sar_to_pseudo_rgb", arguments={"vv_ref": vv.image_id, "vh_ref": vh.image_id}),
-                    ToolCall(name="teochat", purpose="Perform supported cross-modal analysis", operation="cross_modal_analysis", arguments={"image_1_ref": optical.image.image_id, "image_2_ref": "artifact:pseudo_rgb", "prompt": prompt}, depends_on=[1]),
+                    ToolCall(name="pseudo_rgb", purpose="Prepare SAR evidence", operation="sar_to_pseudo_rgb", arguments={"observation_id": sar.id}),
+                    ToolCall(name="teochat", purpose="Perform supported cross-modal analysis", operation="cross_modal_analysis", arguments={"observation_1_id": optical.id, "image_2_ref": "artifact:pseudo_rgb", "prompt": prompt}, depends_on=[1]),
                 ]
             return [
-                ToolCall(name="geochat", purpose="Interpret optical evidence", operation="single_image_analysis", arguments={"image_ref": optical.image.image_id, "prompt": prompt}),
-                ToolCall(name="pseudo_rgb", purpose="Prepare SAR evidence", operation="sar_to_pseudo_rgb", arguments={"vv_ref": vv.image_id, "vh_ref": vh.image_id}),
+                ToolCall(name="geochat", purpose="Interpret optical evidence", operation="single_image_analysis", arguments={"observation_id": optical.id, "prompt": prompt}),
+                ToolCall(name="pseudo_rgb", purpose="Prepare SAR evidence", operation="sar_to_pseudo_rgb", arguments={"observation_id": sar.id}),
                 ToolCall(name="geochat", purpose="Interpret SAR evidence", operation="single_image_analysis", arguments={"image_ref": "artifact:pseudo_rgb", "prompt": prompt}, depends_on=[2]),
             ]
         if configuration == InputConfiguration.BI_TEMPORAL:
-            if request.manifest.metadata.get("_legacy_manifest"):
-                return [ToolCall(name="m2cd", purpose="Detect temporal change", operation="change_detection", arguments={"image_t1_ref": observations[0].image.image_id, "image_t2_ref": observations[1].image.image_id})]
-            return [ToolCall(name="teochat", purpose="Analyze temporal optical observations", operation="temporal_analysis", arguments={"image_1_ref": observations[0].image.image_id, "image_2_ref": observations[1].image.image_id, "prompt": prompt})]
+            return [ToolCall(name="teochat", purpose="Analyze temporal optical observations", operation="temporal_analysis", arguments={"observation_1_id": observations[0].id, "observation_2_id": observations[1].id, "prompt": prompt})]
         if configuration == InputConfiguration.DUAL_SAR:
             first_vv, first_vh = observations[0].physical_files
             second_vv, second_vh = observations[1].physical_files
             # M²CD support is an explicit deployment capability, never an
             # assumption based on the number of uploaded files.
-            if request.metadata.get("capabilities", {}).get("m2cd_sar_sar", True) is True:
-                return [ToolCall(name="m2cd", purpose="Detect change between SAR observations", operation="change_detection", arguments={"image_t1_vv_ref": first_vv.image_id, "image_t1_vh_ref": first_vh.image_id, "image_t2_vv_ref": second_vv.image_id, "image_t2_vh_ref": second_vh.image_id})]
+            if TaskPlanner._capability(request, "m2cd_sar_sar", False) is True:
+                return [ToolCall(name="m2cd", purpose="Detect change between SAR observations", operation="change_detection", arguments={"observation_1_id": observations[0].id, "observation_2_id": observations[1].id})]
             return []
         return []
 
@@ -254,16 +231,26 @@ class TaskPlanner:
                 first_box, second_box = boxes[0], boxes[1]
             first_ref = first.image.image_id if first.image else first.physical_files[0].image_id
             second_ref = second.image.image_id if second.image else second.physical_files[0].image_id
-            calls.append(ToolCall(name="m2cd", purpose="Detect temporal change before regional interpretation", operation="change_detection", arguments={"image_t1_ref": first_ref, "image_t2_ref": second_ref}, bounding_boxes=[first_box, second_box]))
+            sar_sar_disabled = configuration == InputConfiguration.DUAL_SAR and TaskPlanner._capability(request, "m2cd_sar_sar", False) is not True
+            if sar_sar_disabled:
+                return []
+            calls.append(ToolCall(name="m2cd", purpose="Detect temporal change before regional interpretation", operation="change_detection", arguments={"observation_1_id": first.id, "observation_2_id": second.id}, bounding_boxes=[first_box, second_box]))
             calls.extend([
-                ToolCall(name="geochat", purpose="Interpret the requested T1 region", operation="region_grounded_analysis", arguments={"image_ref": first_ref, "prompt": TaskPlanner._region_prompt(prompt, task_type, first, first_box, 1, 2), "bounding_box": first_box.model_dump()}, depends_on=[1], bounding_boxes=[first_box]),
-                ToolCall(name="geochat", purpose="Interpret the requested T2 region", operation="region_grounded_analysis", arguments={"image_ref": second_ref, "prompt": TaskPlanner._region_prompt(prompt, task_type, second, second_box, 2, 2), "bounding_box": second_box.model_dump()}, depends_on=[1], bounding_boxes=[second_box]),
+                ToolCall(name="geochat", purpose="Interpret the requested T1 region", operation="region_grounded_analysis", arguments={"observation_id": first.id, "prompt": TaskPlanner._region_prompt(prompt, task_type, first, first_box, 1, 2), "bounding_box": first_box.model_dump()}, depends_on=[1], bounding_boxes=[first_box]),
+                ToolCall(name="geochat", purpose="Interpret the requested T2 region", operation="region_grounded_analysis", arguments={"observation_id": second.id, "prompt": TaskPlanner._region_prompt(prompt, task_type, second, second_box, 2, 2), "bounding_box": second_box.model_dump()}, depends_on=[1], bounding_boxes=[second_box]),
             ])
             return calls
         for position, (observation, box) in enumerate(zip(observations, boxes), start=1):
             image = observation.image or observation.physical_files[0]
-            calls.append(ToolCall(name="geochat", purpose="Interpret the supplied image region", operation="region_grounded_analysis", arguments={"image_ref": image.image_id, "prompt": TaskPlanner._region_prompt(prompt, task_type, observation, box, position, len(observations)), "bounding_box": box.model_dump()}, bounding_boxes=[box]))
+            calls.append(ToolCall(name="geochat", purpose="Interpret the supplied image region", operation="region_grounded_analysis", arguments={"observation_id": observation.id, "prompt": TaskPlanner._region_prompt(prompt, task_type, observation, box, position, len(observations)), "bounding_box": box.model_dump()}, bounding_boxes=[box]))
         return calls
+
+    @staticmethod
+    def _capability(request: AnalysisRequest, name: str, default: Any) -> Any:
+        capabilities = request.metadata.get("capabilities")
+        if not isinstance(capabilities, dict):
+            capabilities = request.manifest.metadata.get("capabilities")
+        return capabilities.get(name, default) if isinstance(capabilities, dict) else default
 
     @staticmethod
     def _standard_prompt(prompt: str, task_type: TaskType) -> str:

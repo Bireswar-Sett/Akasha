@@ -105,9 +105,14 @@ class SARFiles(BaseModel):
 class RelationshipMetadata(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    type: Literal["single", "temporal", "bi_temporal", "cross_modal", "mixed"] | None = None
     spatially_corresponding: bool | None = None
     co_registered: bool | None = None
     relationship: Literal["single", "temporal", "cross_modal", "mixed"] | None = None
+
+    @property
+    def kind(self) -> str | None:
+        return self.relationship or self.type
 
 
 class Observation(BaseModel):
@@ -151,6 +156,16 @@ class InputManifest(BaseModel):
         physical_count = sum(len(observation.physical_files) for observation in self.observations)
         if physical_count > 4:
             raise ValueError("at most four physical image files are supported")
+        relation = self.relationship.kind
+        modalities = [observation.modality for observation in self.observations]
+        if relation in {"temporal", "bi_temporal"}:
+            if len(self.observations) != 2:
+                raise ValueError("temporal relationships require exactly two observations")
+            if not all(observation.acquisition_time for observation in self.observations):
+                raise ValueError("temporal relationships require acquisition_time for both observations")
+        if relation == "cross_modal":
+            if len(self.observations) != 2 or set(modalities) not in ({"optical", "sar"}, {"multispectral", "sar"}):
+                raise ValueError("cross_modal relationships require one optical/multispectral and one SAR observation")
         return self
 
     @property
@@ -162,6 +177,131 @@ class InputManifest(BaseModel):
         )
 
 
+def build_input_manifest(
+    physical_refs: list[str],
+    raw_manifest: dict[str, Any] | InputManifest | None = None,
+    *,
+    metadata: dict[str, Any] | None = None,
+    authorized_refs: dict[str, str | None] | None = None,
+) -> InputManifest:
+    """Convert transport-level physical references into logical observations.
+
+    This is the only place where physical files are associated with logical
+    observations.  A manifest may refer to a direct Gradio file by its
+    zero-based ``physical_index`` or to a trusted backend reference ID.
+    Filenames are deliberately never inspected.
+    """
+    refs = [str(value).strip() for value in physical_refs if str(value).strip()]
+    if not refs:
+        raise ValueError("at least one image input is required")
+    if len(refs) > 4:
+        raise ValueError("at most four physical image files are supported")
+
+    if isinstance(raw_manifest, InputManifest):
+        if len(raw_manifest.physical_files) != len(refs):
+            raise ValueError("manifest physical files must match image inputs")
+        return raw_manifest
+
+    payload = raw_manifest if isinstance(raw_manifest, dict) else (metadata or {})
+    observation_payloads = payload.get("observations")
+    if observation_payloads is None:
+        # Keep the old explicit channel-role contract usable for trusted
+        # callers, but do not infer it from filenames or file extensions.
+        if payload.get("sar_channels") == ["vv_t1", "vh_t1", "vv_t2", "vh_t2"] and len(refs) == 4:
+            observation_payloads = [
+                {"id": "observation_t1", "modality": "sar", "acquisition_time": "t1", "sar": {"vv": {"physical_index": 0}, "vh": {"physical_index": 1}}},
+                {"id": "observation_t2", "modality": "sar", "acquisition_time": "t2", "sar": {"vv": {"physical_index": 2}, "vh": {"physical_index": 3}}},
+            ]
+        elif len(refs) == 1:
+            observation_payloads = [{"id": "observation_1", "modality": "optical", "image": {"physical_index": 0}}]
+        else:
+            # Keep older API callers on a structured incompatibility path.
+            # The Gradio adapter rejects this ambiguous shape explicitly.
+            observation_payloads = [
+                {"id": f"observation_{index}", "modality": "optical", "image": {"physical_index": index - 1}}
+                for index in range(1, len(refs) + 1)
+            ]
+
+    if not isinstance(observation_payloads, list):
+        raise ValueError("manifest observations must be a list")
+
+    id_to_ref = {f"image_{index + 1}": value for index, value in enumerate(refs)}
+    if authorized_refs:
+        id_to_ref = {key: value for key, value in authorized_refs.items() if value}
+
+    def resolve(value: Any, fallback: str) -> ImageReference:
+        item = value if isinstance(value, dict) else {"id": value}
+        physical_index = item.get("physical_index")
+        if physical_index is not None:
+            if not isinstance(physical_index, int) or not 0 <= physical_index < len(refs):
+                raise ValueError(f"manifest physical_index for {fallback!r} is out of range")
+            if authorized_refs:
+                authorized_items = [(key, value) for key, value in authorized_refs.items() if value]
+                ref_id, url = authorized_items[physical_index]
+            else:
+                ref_id, url = f"image_{physical_index + 1}", refs[physical_index]
+        else:
+            ref_id = str(item.get("id", fallback))
+            url = item.get("url") or item.get("path") or id_to_ref.get(ref_id)
+            if not url:
+                if authorized_refs:
+                    raise ValueError(f"Manifest references an unauthorized image ID: {ref_id}")
+                raise ValueError(f"manifest reference {ref_id!r} has no authorized physical reference")
+            if authorized_refs:
+                url = id_to_ref.get(ref_id)
+            elif url not in refs:
+                raise ValueError(f"manifest reference {ref_id!r} is not authorized")
+        return ImageReference(
+            image_id=ref_id,
+            url=url,
+            modality=item.get("modality"),
+            timestamp=item.get("timestamp"),
+            bands=item.get("bands"),
+            spatially_corresponding=item.get("spatially_corresponding"),
+        )
+
+    observations: list[Observation] = []
+    for index, item in enumerate(observation_payloads, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"manifest observation {index} must be an object")
+        observation_id = str(item.get("id", f"observation_{index}"))
+        modality = item.get("modality")
+        if modality is None:
+            if item.get("sar") is not None:
+                modality = "sar"
+            elif item.get("image") is not None:
+                modality = "optical"
+            else:
+                raise ValueError(f"observation {observation_id!r} must declare modality or an image/sar payload")
+        if modality == "sar":
+            sar = item.get("sar") or {}
+            observations.append(Observation(
+                id=observation_id,
+                modality="sar",
+                acquisition_time=item.get("acquisition_time"),
+                sar=SARFiles(
+                    vv=resolve(sar.get("vv"), f"{observation_id}_vv"),
+                    vh=resolve(sar.get("vh"), f"{observation_id}_vh"),
+                ),
+                metadata=item.get("metadata", {}),
+            ))
+        else:
+            observations.append(Observation(
+                id=observation_id,
+                modality=modality,
+                acquisition_time=item.get("acquisition_time"),
+                image=resolve(item.get("image"), f"{observation_id}_image"),
+                metadata=item.get("metadata", {}),
+            ))
+
+    relationship = payload.get("relationship") or {}
+    return InputManifest(
+        observations=observations,
+        relationship=RelationshipMetadata.model_validate(relationship),
+        metadata=payload.get("metadata") or {},
+    )
+
+
 class AnalysisRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -169,7 +309,7 @@ class AnalysisRequest(BaseModel):
     signed_image_urls: list[str] = Field(default_factory=list, max_length=4)
     local_image_paths: list[str] = Field(default_factory=list, max_length=4)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    manifest: InputManifest | None = None
+    manifest: InputManifest | dict[str, Any] | None = None
     user_query: str | None = None
     bounding_boxes: list[BoundingBox] = Field(default_factory=list)
 
@@ -214,7 +354,9 @@ class AnalysisRequest(BaseModel):
         if not physical_count:
             raise ValueError("at least one image input is required")
         if self.manifest is None:
-            self.manifest = self._legacy_manifest()
+            self.manifest = build_input_manifest(self.physical_image_refs, metadata=self.metadata)
+        elif isinstance(self.manifest, dict):
+            self.manifest = build_input_manifest(self.physical_image_refs, raw_manifest=self.manifest)
         elif len(self.manifest.physical_files) != physical_count:
             raise ValueError("manifest physical files must match image inputs")
         return self
@@ -222,140 +364,6 @@ class AnalysisRequest(BaseModel):
     @property
     def physical_image_refs(self) -> list[str]:
         return [*self.signed_image_urls, *self.local_image_paths]
-
-    def _legacy_manifest(self) -> InputManifest:
-        physical_refs = self.physical_image_refs
-        channel_roles = self.metadata.get("sar_channels")
-        if channel_roles == ["vv_t1", "vh_t1", "vv_t2", "vh_t2"] and len(physical_refs) == 4:
-            refs = [ImageReference(image_id=f"image_{index}", url=url, modality="sar") for index, url in enumerate(physical_refs, start=1)]
-            return InputManifest(
-                observations=[
-                    Observation(id="observation_t1", modality="sar", acquisition_time="t1", sar=SARFiles(vv=refs[0], vh=refs[1])),
-                    Observation(id="observation_t2", modality="sar", acquisition_time="t2", sar=SARFiles(vv=refs[2], vh=refs[3])),
-                ],
-                relationship=RelationshipMetadata(relationship="temporal", spatially_corresponding=True),
-                metadata={**self.metadata, "_legacy_manifest": False},
-            )
-        explicit_observations = self.metadata.get("observations")
-        if isinstance(explicit_observations, list):
-            # The relationship between physical files is supplied by the
-            # trusted manifest.  Only URLs are injected here; Qwen never
-            # derives pairing from names.
-            by_id = {
-                f"image_{index}": url
-                for index, url in enumerate(physical_refs, start=1)
-            }
-            def resolve(value: Any, fallback: str) -> ImageReference:
-                item = value if isinstance(value, dict) else {"id": value}
-                ref_id = str(item.get("id", fallback))
-                url = item.get("url") or item.get("path") or by_id.get(ref_id)
-                if not url:
-                    raise ValueError(f"manifest reference {ref_id!r} has no signed URL")
-                if url not in physical_refs:
-                    raise ValueError(f"manifest reference {ref_id!r} is not authorized")
-                return ImageReference(
-                    image_id=ref_id,
-                    url=url,
-                    modality=item.get("modality"),
-                    timestamp=item.get("timestamp"),
-                    bands=item.get("bands"),
-                )
-
-            observations: list[Observation] = []
-            for index, item in enumerate(explicit_observations, start=1):
-                modality = item.get("modality")
-                observation_id = str(item.get("id", f"observation_{index}"))
-                if modality == "sar":
-                    sar = item.get("sar") or {}
-                    observations.append(Observation(
-                        id=observation_id,
-                        modality="sar",
-                        acquisition_time=item.get("acquisition_time"),
-                        sar=SARFiles(
-                            vv=resolve(sar.get("vv"), f"{observation_id}_vv"),
-                            vh=resolve(sar.get("vh"), f"{observation_id}_vh"),
-                        ),
-                        metadata=item.get("metadata", {}),
-                    ))
-                else:
-                    observations.append(Observation(
-                        id=observation_id,
-                        modality=modality,
-                        acquisition_time=item.get("acquisition_time"),
-                        image=resolve(item.get("image"), f"{observation_id}_image"),
-                        metadata=item.get("metadata", {}),
-                    ))
-            return InputManifest(
-                observations=observations,
-                relationship=RelationshipMetadata.model_validate(self.metadata.get("relationship") or {}),
-                metadata={**self.metadata, "_legacy_manifest": False},
-            )
-
-        metadata_images = self.metadata.get("images", [])
-        metadata_by_id = {
-            str(item.get("id", index + 1)): item
-            for index, item in enumerate(metadata_images)
-            if isinstance(item, dict)
-        }
-        observations: list[Observation] = []
-        for index, url in enumerate(physical_refs, start=1):
-            item = metadata_by_id.get(f"image_{index}", metadata_by_id.get(str(index), {}))
-            modality = item.get("modality", "optical")
-            if modality == "sar" and item.get("vv_url") and item.get("vh_url"):
-                observations.append(Observation(
-                    id=f"observation_{index}",
-                    modality="sar",
-                    acquisition_time=item.get("acquisition_time"),
-                    sar=SARFiles(
-                        vv=ImageReference(image_id=f"image_{index}_vv", url=item["vv_url"]),
-                        vh=ImageReference(image_id=f"image_{index}_vh", url=item["vh_url"]),
-                    ),
-                    metadata=item,
-                ))
-                continue
-            if modality == "sar":
-                # Compatibility for the original four-URL Gradio contract.
-                # New manifests must provide distinct VV and VH references.
-                legacy_ref = ImageReference(image_id=f"image_{index}", url=url, modality="sar")
-                observations.append(Observation(
-                    id=f"observation_{index}",
-                    modality="sar",
-                    acquisition_time=item.get("acquisition_time"),
-                    sar=SARFiles(vv=legacy_ref, vh=legacy_ref),
-                    metadata=item,
-                ))
-                continue
-            observations.append(Observation(
-                id=f"observation_{index}",
-                modality=modality,
-                acquisition_time=item.get("acquisition_time"),
-                image=ImageReference(
-                    image_id=f"image_{index}",
-                    url=url,
-                    modality=modality,
-                    timestamp=item.get("acquisition_time"),
-                    bands=item.get("bands"),
-                ),
-                metadata=item,
-            ))
-        pair = self.metadata.get("pair_metadata") or {}
-        relationship = self.metadata.get("input_configuration")
-        if relationship == "bi_temporal":
-            relationship = "temporal"
-        elif relationship == "optical_sar":
-            relationship = "cross_modal"
-        elif relationship not in {"single", "temporal", "cross_modal", "mixed"}:
-            relationship = None
-        return InputManifest(
-            observations=observations,
-            relationship=RelationshipMetadata(
-                spatially_corresponding=pair.get("spatially_corresponding"),
-                co_registered=pair.get("co_registered"),
-                relationship=relationship,
-            ),
-            metadata={**self.metadata, "_legacy_manifest": True},
-        )
-
 
 class ToolCall(BaseModel):
     model_config = ConfigDict(extra="forbid")

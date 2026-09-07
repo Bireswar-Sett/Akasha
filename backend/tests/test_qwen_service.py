@@ -48,5 +48,7 @@ def test_qwen_service_calls_current_signed_url_interface():
         url_2="https://storage.example/two",
         url_3="",
         url_4="",
+        manifest_json='{"images": [{}, {}], "pair_metadata": null}',
+        physical_files=[],
         api_name="/analyze",
     )

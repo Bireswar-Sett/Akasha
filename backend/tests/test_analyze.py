@@ -203,7 +203,7 @@ def test_qwen_upstream_failure_returns_502(mock_user, mock_storage, mock_qwen):
         app.dependency_overrides.clear()
 
 
-def test_qwen_upstream_failure_uses_local_fallback(mock_user, mock_storage):
+def test_qwen_upstream_failure_does_not_fabricate_local_findings(mock_user, mock_storage):
     qwen_service = QwenService(space="AdityaSingh1531/qwen", token="test-token")
     qwen_service._client = MagicMock()
     qwen_service._client.predict.side_effect = RuntimeError("upstream AppError")
@@ -222,8 +222,8 @@ def test_qwen_upstream_failure_uses_local_fallback(mock_user, mock_storage):
             headers={"Authorization": "Bearer valid-mock-token"},
         )
 
-        assert response.status_code == 200
-        assert "AKASHA Earth Observation" in response.json()["answer"]
+        assert response.status_code == 502
+        assert "temporarily unavailable" in response.json()["detail"]
     finally:
         app.dependency_overrides.clear()
 

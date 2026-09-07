@@ -8,7 +8,7 @@ import spaces
 from qwen.controller.controller import QwenController
 from qwen.controller.executor import ToolExecutor
 from qwen.controller.model import QwenEngine
-from qwen.controller.schemas import AnalysisRequest
+from qwen.controller.schemas import AnalysisRequest, build_input_manifest
 from qwen.controller.services import MAX_CONTROLLER_STEPS, validate_config
 
 
@@ -33,7 +33,16 @@ def analyze(user_request: str, url_1: str = "", url_2: str = "", url_3: str = ""
             raise ValueError("Manifest must be a JSON object")
         local_paths = [url for url in urls if not url.startswith(("http://", "https://"))]
         signed_urls = [url for url in urls if url.startswith(("http://", "https://"))]
-        request = AnalysisRequest(user_request=user_request, signed_image_urls=signed_urls, local_image_paths=local_paths, metadata=metadata)
+        if len(urls) > 1 and "observations" not in metadata and metadata.get("sar_channels") is None:
+            raise ValueError("Input Manifest JSON is required when multiple physical files are supplied")
+        manifest = build_input_manifest(urls, raw_manifest=metadata)
+        request = AnalysisRequest(
+            user_request=user_request,
+            signed_image_urls=signed_urls,
+            local_image_paths=local_paths,
+            manifest=manifest,
+            metadata=metadata,
+        )
         return json.dumps(controller.run_request(request), ensure_ascii=False, indent=2, default=str)
     except ValueError as exc:
         raise gr.Error(str(exc)) from exc

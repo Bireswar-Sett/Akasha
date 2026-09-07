@@ -16,7 +16,7 @@ from qwen.controller.schemas import (
     InputManifest,
     Observation,
     RelationshipMetadata,
-    SARFiles,
+    build_input_manifest,
     SpecialistEvidence,
     ToolStatus,
 )
@@ -74,7 +74,7 @@ class QwenController:
                     bounding_boxes=call.bounding_boxes,
                 ))
                 continue
-            arguments = self._bind_authorized_references(call.arguments, image_refs, artifacts)
+            arguments = self._bind_authorized_references(call.arguments, image_refs, artifacts, request.manifest, call.name)
             started = perf_counter()
             result = self.executor.execute(call.name, arguments)
             duration_ms = int((perf_counter() - started) * 1000)
@@ -109,44 +109,10 @@ class QwenController:
 
     @staticmethod
     def _authorized_manifest(manifest: dict[str, Any], image_refs: dict[str, str | None]) -> InputManifest:
-        observations: list[Observation] = []
-
-        def reference(value: Any, default_id: str) -> ImageReference:
-            reference_id = value.get("id", default_id) if isinstance(value, dict) else str(value)
-            url = image_refs.get(reference_id)
-            if not url:
-                raise ValueError(f"Manifest references an unauthorized image ID: {reference_id}")
-            return ImageReference(image_id=reference_id, url=url)
-
-        for item in manifest.get("observations", []):
-            modality = item.get("modality")
-            observation_id = str(item.get("id"))
-            if modality == "sar":
-                sar = item.get("sar") or {}
-                observations.append(Observation(
-                    id=observation_id,
-                    modality="sar",
-                    acquisition_time=item.get("acquisition_time"),
-                    sar=SARFiles(
-                        vv=reference(sar.get("vv"), f"{observation_id}_vv"),
-                        vh=reference(sar.get("vh"), f"{observation_id}_vh"),
-                    ),
-                    metadata=item.get("metadata", {}),
-                ))
-            else:
-                observations.append(Observation(
-                    id=observation_id,
-                    modality=modality,
-                    acquisition_time=item.get("acquisition_time"),
-                    image=reference(item.get("image"), f"{observation_id}_image"),
-                    metadata=item.get("metadata", {}),
-                ))
-
-        relationship = manifest.get("relationship") or {}
-        return InputManifest(
-            observations=observations,
-            relationship=RelationshipMetadata.model_validate(relationship),
-            metadata=manifest.get("metadata", {}),
+        return build_input_manifest(
+            [value for value in image_refs.values() if value],
+            raw_manifest=manifest,
+            authorized_refs=image_refs,
         )
 
     def _synthesize(self, user_request: str, base: dict[str, Any], evidence: list[SpecialistEvidence], max_new_tokens: int) -> str:
@@ -165,8 +131,32 @@ class QwenController:
         return "USER REQUEST\n" + user_request + "\n\nINPUT\n" + json.dumps(base, default=str) + "\n\nSPECIALIST EVIDENCE\n" + json.dumps(evidence, default=str) + "\n\nAnswer only from this evidence; do not expose hidden reasoning."
 
     @staticmethod
-    def _bind_authorized_references(arguments: dict[str, Any], image_refs: dict[str, str], artifacts: dict[str, Any]) -> dict[str, Any]:
+    def _bind_authorized_references(arguments: dict[str, Any], image_refs: dict[str, str], artifacts: dict[str, Any], manifest: InputManifest, tool_name: str) -> dict[str, Any]:
         bound = dict(arguments)
+        observations = {observation.id: observation for observation in manifest.observations}
+
+        def observation_files(observation_id: str) -> tuple[str, ...]:
+            observation = observations.get(observation_id)
+            if observation is None:
+                raise ValueError(f"Unknown logical observation ID: {observation_id}")
+            return tuple(image_refs[image.image_id] for image in observation.physical_files)
+
+        if isinstance(bound.get("observation_id"), str):
+            refs = observation_files(bound.pop("observation_id"))
+            if tool_name == "pseudo_rgb":
+                bound["vv_ref"], bound["vh_ref"] = refs
+            else:
+                bound["image_ref"] = refs[0]
+        for logical_key, target_key in (("observation_1_id", "image_1_ref"), ("observation_2_id", "image_2_ref")):
+            if isinstance(bound.get(logical_key), str):
+                refs = observation_files(bound.pop(logical_key))
+                if tool_name == "m2cd" and len(refs) == 2:
+                    prefix = "image_t1" if logical_key == "observation_1_id" else "image_t2"
+                    bound[f"{prefix}_vv_ref"], bound[f"{prefix}_vh_ref"] = refs
+                elif tool_name == "m2cd":
+                    bound["image_t1_ref" if logical_key == "observation_1_id" else "image_t2_ref"] = refs[0]
+                else:
+                    bound[target_key] = refs[0]
         for key, value in list(bound.items()):
             if not key.endswith("ref") or not isinstance(value, str):
                 continue

@@ -8,7 +8,6 @@ Pillow
 numpy
 tiktoken
 torchvision
-gradio_client
 pydantic>=2.7
 requests>=2.32
 rasterio>=1.3

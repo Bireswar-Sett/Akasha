@@ -77,8 +77,9 @@ def test_manifest_counts_two_sar_observations_as_four_files():
     assert len(request.manifest.observations) == 2
     assert len(request.manifest.physical_files) == 4
     assert [call.name for call in plan.calls] == ["m2cd"]
-    assert set(plan.calls[0].arguments) == {
-        "image_t1_vv_ref", "image_t1_vh_ref", "image_t2_vv_ref", "image_t2_vh_ref"
+    assert plan.calls[0].arguments == {
+        "observation_1_id": "sar_t1",
+        "observation_2_id": "sar_t2",
     }
 
 
@@ -88,6 +89,34 @@ def test_manifest_rejects_sar_without_vv_and_vh():
             id="sar",
             modality="sar",
             image=reference("image", URLS[0]),
+        )
+
+
+def test_four_physical_files_two_logical_sar_observations_with_null_legacy_modality():
+    request = AnalysisRequest(
+        user_request="difference between these",
+        signed_image_urls=URLS,
+        metadata={
+            "observations": [
+                {"id": "obs_t1", "modality": None, "acquisition_time": "2024-01-04", "sar": {"vv": {"id": "image_1"}, "vh": {"id": "image_2"}}},
+                {"id": "obs_t2", "modality": None, "acquisition_time": "2024-04-05", "sar": {"vv": {"id": "image_3"}, "vh": {"id": "image_4"}}},
+            ],
+            "relationship": {"type": "bi_temporal", "spatially_corresponding": True},
+        },
+    )
+    assert len(request.manifest.observations) == 2
+    assert [item.modality for item in request.manifest.observations] == ["sar", "sar"]
+    assert all(item.sar and item.sar.vv and item.sar.vh for item in request.manifest.observations)
+    plan = TaskPlanner().plan(request)
+    assert plan.images_used == ["obs_t1", "obs_t2"]
+    assert plan.input_configuration == InputConfiguration.DUAL_SAR
+
+
+def test_temporal_relationship_requires_two_dated_observations():
+    with pytest.raises(ValidationError, match="temporal relationships require exactly two"):
+        InputManifest(
+            observations=[optical_observation("t1", URLS[0], "2024-01-01")],
+            relationship=RelationshipMetadata(type="bi_temporal"),
         )
 
 

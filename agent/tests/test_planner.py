@@ -119,15 +119,15 @@ def test_bbox_prompt_is_task_aware_for_visual_question():
 
 def test_multiple_bbox_associations_are_not_collapsed():
     query = "Compare the regions. b = {10, 20, 40, 50|0} b = {60, 25, 90, 70|5}"
-    request = AnalysisRequest(user_request=query, signed_image_urls=URLS[:2], metadata={"input_configuration": "optical_sar", "images": [{"id": "image_1", "modality": "optical"}, {"id": "image_2", "modality": "optical"}]})
+    request = AnalysisRequest(user_request=query, signed_image_urls=URLS[:2], metadata={"input_configuration": "bi_temporal", "pair_metadata": {"spatially_corresponding": True}, "images": [{"id": "image_1", "modality": "optical", "acquisition_time": "2024"}, {"id": "image_2", "modality": "optical", "acquisition_time": "2025"}]})
     plan = TaskPlanner().plan(request)
     assert len(plan.bounding_boxes) == 2
-    assert [call.arguments["bounding_box"]["x_left"] for call in plan.calls] == [10, 60]
-    assert all(call.name == "geochat" for call in plan.calls)
+    assert [call.arguments["bounding_box"]["x_left"] for call in plan.calls[1:]] == [10, 60]
+    assert [call.name for call in plan.calls] == ["m2cd", "geochat", "geochat"]
 
 
 def test_bbox_temporal_plan_keeps_m2cd_and_geochat_region_calls():
-    request = AnalysisRequest(user_request="What changed? b = {20, 30, 70, 80|0} b = {22, 32, 72, 82|5}", signed_image_urls=URLS[:2], metadata={"input_configuration": "bi_temporal"})
+    request = AnalysisRequest(user_request="What changed? b = {20, 30, 70, 80|0} b = {22, 32, 72, 82|5}", signed_image_urls=URLS[:2], metadata={"input_configuration": "bi_temporal", "images": [{"id": "image_1", "modality": "optical", "acquisition_time": "2024"}, {"id": "image_2", "modality": "optical", "acquisition_time": "2025"}]})
     plan = TaskPlanner().plan(request)
     assert [call.name for call in plan.calls] == ["m2cd", "geochat", "geochat"]
     assert all(call.name != "teochat" for call in plan.calls)
