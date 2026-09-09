@@ -1,4 +1,6 @@
+import base64
 import os
+
 try:
     from openai import OpenAI
 except ImportError:

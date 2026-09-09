@@ -1,0 +1,62 @@
+# ──────────────────────────────────────────────────────────────
+# AKASHA Backend — Docker build exclusions
+#
+# IMPORTANT: Never include credentials, secrets, or local
+# environment files in the Docker image.
+# ──────────────────────────────────────────────────────────────
+
+# Environment / secrets
+.env
+.env.*
+*.env
+*.secret
+secrets/
+
+# Firebase / Google credentials (NEVER bake into image)
+firebase-service-account.json
+*.json
+!package.json
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+
+# Test artifacts
+tests/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Type checking
+.mypy_cache/
+.ruff_cache/
+
+# IDE / editor
+.vscode/
+.idea/
+*.suo
+*.swp
+*.swo
+
+# OS junk
+.DS_Store
+._*
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation (not needed at runtime)
+README.md
+*.md

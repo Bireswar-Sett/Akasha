@@ -901,3 +901,96 @@ html {
   background: var(--bg-card-hover);
   border-color: var(--border-medium);
 }
+
+/* ============================================================================
+ * Responsive breakpoints
+ * ========================================================================== */
+
+/* ── Tablet (≤ 1024px) ─────────────────────────────────────────────────────── */
+@media (max-width: 1024px) {
+  .login-split-container {
+    flex-direction: column;
+  }
+
+  .login-video-panel {
+    display: none; /* Hide video panel on tablet/mobile — show only auth card */
+  }
+
+  .login-card-panel {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+  }
+
+  .login-card {
+    width: 100%;
+    max-width: 420px;
+  }
+}
+
+/* ── Mobile (≤ 768px) ──────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  /* App layout — sidebar overlays content on mobile */
+  .app-container {
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Login card */
+  .login-card {
+    padding: 1.5rem 1.25rem;
+  }
+
+  .login-title {
+    font-size: 1.5rem;
+  }
+
+  /* Force sidebar to be an overlay rather than a fixed column */
+  aside[style] {
+    position: fixed !important;
+    top: 0;
+    left: 0;
+    height: 100dvh !important;
+    z-index: 100;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.35);
+  }
+
+  /* Main chat area always fills full width */
+  main, .chat-main, [class*="chat-container"] {
+    width: 100% !important;
+    min-width: 0 !important;
+    flex: 1 !important;
+  }
+
+  /* Input bar stays pinned to bottom */
+  .chat-input-area,
+  [class*="input-area"],
+  [class*="input-bar"] {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+  }
+
+  /* Reduce font sizes slightly */
+  body {
+    font-size: 15px;
+  }
+}
+
+/* ── Small mobile (≤ 480px) ────────────────────────────────────────────────── */
+@media (max-width: 480px) {
+  .login-card {
+    padding: 1.25rem 1rem;
+    border-radius: var(--radius-md);
+  }
+
+  .login-logo-img {
+    height: 36px !important;
+  }
+
+  .login-title {
+    font-size: 1.35rem;
+  }
+}

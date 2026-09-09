@@ -2,21 +2,21 @@ import React, { useState, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatInterface from './components/ChatInterface';
 import Login from './components/Login';
-import { auth, db, signOut, isDemoMode } from './firebaseClient';
-import { onAuthStateChanged } from 'firebase/auth';
-import { 
-  collection, 
-  doc, 
-  setDoc, 
-  deleteDoc, 
-  onSnapshot, 
-  query, 
-  orderBy 
-} from 'firebase/firestore';
+
+import {
+  getCurrentUser,
+  fetchAuthSession,
+  fetchUserAttributes,
+  signOut as cognitoSignOut
+} from 'aws-amplify/auth';
+import { Hub } from 'aws-amplify/utils';
+
 import './index.css';
 
 function App() {
-  /* ── Theme state: 'dark' | 'light' ── */
+  /* ──────────────────────────────────────────────────────────────
+   * Theme
+   * ────────────────────────────────────────────────────────────── */
   const [theme, setTheme] = useState(() => {
     try {
       return localStorage.getItem('akasha_theme') || 'dark';
@@ -26,300 +26,544 @@ function App() {
   });
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
+    document.documentElement.setAttribute(
+      'data-theme',
+      theme
+    );
+
     try {
       localStorage.setItem('akasha_theme', theme);
     } catch (_) {}
   }, [theme]);
 
   const toggleTheme = () => {
-    setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+    setTheme(prev =>
+      prev === 'dark' ? 'light' : 'dark'
+    );
   };
 
-  /* ── Auth state ── */
+  /* ──────────────────────────────────────────────────────────────
+   * Authentication
+   * ────────────────────────────────────────────────────────────── */
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
 
-  /* ── Chat sessions state ── */
+  /* ──────────────────────────────────────────────────────────────
+   * Chat sessions
+   * ────────────────────────────────────────────────────────────── */
   const [sessions, setSessions] = useState([]);
-  const [activeSessionId, setActiveSessionId] = useState(null);
+  const [activeSessionId, setActiveSessionId] =
+    useState(null);
 
-  /* ── Per-session draft cache: { [sessionId]: { query: '', files: [] } } ── */
-  // Restore query drafts from localStorage on mount (files can't be restored across refresh)
+  /* ──────────────────────────────────────────────────────────────
+   * Per-session draft cache
+   * ────────────────────────────────────────────────────────────── */
   const [drafts, setDrafts] = useState(() => {
     try {
-      const saved = localStorage.getItem('akasha_drafts');
+      const saved =
+        localStorage.getItem('akasha_drafts');
+
       if (saved) {
         const parsed = JSON.parse(saved);
-        // Restore only query strings; files can't survive a page refresh
         const restored = {};
-        Object.entries(parsed).forEach(([sid, d]) => {
-          restored[sid] = { query: d.query || '', files: [] };
-        });
+
+        Object.entries(parsed).forEach(
+          ([sid, draft]) => {
+            restored[sid] = {
+              query: draft.query || '',
+              files: []
+            };
+          }
+        );
+
         return restored;
       }
     } catch (_) {}
+
     return {};
   });
 
-  /* Get / set the draft for the current active session */
-  const currentDraft = drafts[activeSessionId] || { query: '', files: [] };
+  const currentDraft =
+    drafts[activeSessionId] || {
+      query: '',
+      files: []
+    };
+
   const selectedFiles = currentDraft.files;
 
-  const setSelectedFiles = (files) => {
+  const setSelectedFiles = files => {
+    if (!activeSessionId) return;
+
     setDrafts(prev => ({
       ...prev,
-      [activeSessionId]: { ...(prev[activeSessionId] || { query: '', files: [] }), files }
+      [activeSessionId]: {
+        ...(prev[activeSessionId] || {
+          query: '',
+          files: []
+        }),
+        files
+      }
     }));
   };
 
-  const setDraftQuery = (q) => {
+  const setDraftQuery = query => {
+    if (!activeSessionId) return;
+
     setDrafts(prev => ({
       ...prev,
-      [activeSessionId]: { ...(prev[activeSessionId] || { query: '', files: [] }), query: q }
+      [activeSessionId]: {
+        ...(prev[activeSessionId] || {
+          query: '',
+          files: []
+        }),
+        query
+      }
     }));
   };
 
   const clearDraft = () => {
+    if (!activeSessionId) return;
+
     setDrafts(prev => ({
       ...prev,
-      [activeSessionId]: { query: '', files: [] }
+      [activeSessionId]: {
+        query: '',
+        files: []
+      }
     }));
   };
 
-  /* Persist draft queries (not files) to localStorage on every change */
+  /* ──────────────────────────────────────────────────────────────
+   * Persist drafts
+   * ────────────────────────────────────────────────────────────── */
   useEffect(() => {
     try {
       const toSave = {};
-      Object.entries(drafts).forEach(([sid, d]) => {
-        if (d.query) toSave[sid] = { query: d.query };
-      });
-      localStorage.setItem('akasha_drafts', JSON.stringify(toSave));
+
+      Object.entries(drafts).forEach(
+        ([sid, draft]) => {
+          if (draft.query) {
+            toSave[sid] = {
+              query: draft.query
+            };
+          }
+        }
+      );
+
+      localStorage.setItem(
+        'akasha_drafts',
+        JSON.stringify(toSave)
+      );
     } catch (_) {}
   }, [drafts]);
 
-  /* Listen for Firebase Auth state changes */
+  /* ──────────────────────────────────────────────────────────────
+   * Authentication initialization
+   *
+   * Cognito:
+   *   - email/password users
+   *   - Google federated users
+   *
+   * Demo login is handled directly by Login.jsx.
+   * ────────────────────────────────────────────────────────────── */
   useEffect(() => {
-    if (isDemoMode) {
-      setAuthLoading(false);
-      return;
-    }
+    let mounted = true;
 
-    let isMounted = true;
-    const timeoutId = setTimeout(() => {
-      if (isMounted) setAuthLoading(false);
-    }, 1500);
+    const initializeAuth = async () => {
+      try {
+        const currentUser = await getCurrentUser();
+        const session = await fetchAuthSession();
 
-    let unsubscribe = () => {};
-    try {
-      unsubscribe = onAuthStateChanged(
-        auth,
-        (firebaseUser) => {
-          clearTimeout(timeoutId);
-          if (!isMounted) return;
-          if (firebaseUser) {
-            setUser({
-              id: firebaseUser.uid,
-              email: firebaseUser.email,
-              name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Astronaut',
-              avatar: firebaseUser.photoURL || null,
-              provider: firebaseUser.providerData[0]?.providerId || 'email',
-            });
-          } else {
-            setUser(null);
-            setSessions([]);
-            setActiveSessionId(null);
-          }
-          setAuthLoading(false);
-        },
-        (err) => {
-          console.warn('Firebase auth listener error:', err);
-          clearTimeout(timeoutId);
-          if (isMounted) setAuthLoading(false);
+        if (!mounted) return;
+
+        const accessToken =
+          session.tokens?.accessToken?.toString() ||
+          null;
+
+        if (!currentUser || !accessToken) {
+          setUser(null);
+          return;
         }
-      );
-    } catch (err) {
-      console.warn('Failed to subscribe to auth state:', err);
-      clearTimeout(timeoutId);
-      setAuthLoading(false);
-    }
+
+        /*
+         * fetchUserAttributes() gives us the actual Cognito
+         * attributes for federated users, including email.
+         */
+        let attributes = {};
+
+        try {
+          attributes = await fetchUserAttributes();
+        } catch (attributeError) {
+          console.warn(
+            '[AKASHA] Unable to fetch Cognito user attributes:',
+            attributeError
+          );
+        }
+
+        if (!mounted) return;
+
+        const idTokenPayload = session.tokens?.idToken?.payload || {};
+        const accessTokenPayload = session.tokens?.accessToken?.payload || {};
+
+        const email =
+          attributes?.email ||
+          idTokenPayload?.email ||
+          accessTokenPayload?.email ||
+          currentUser.signInDetails?.loginId ||
+          null;
+
+        const rawUsername = currentUser.username || '';
+        const isGoogle = rawUsername.startsWith('google_');
+
+        const name =
+          attributes?.name ||
+          idTokenPayload?.name ||
+          attributes?.preferred_username ||
+          (email ? email.split('@')[0] : null) ||
+          (!isGoogle && rawUsername ? rawUsername : null) ||
+          'Astronaut';
+
+        const avatar =
+          attributes?.picture ||
+          idTokenPayload?.picture ||
+          null;
+
+        const provider = isGoogle ? 'Google' : 'Cognito';
+
+        setUser({
+          id: currentUser.userId,
+          email,
+          name,
+          avatar,
+          provider
+        });
+      } catch (err) {
+        /*
+         * No Cognito session is normal when logged out.
+         */
+        if (
+          err?.name !== 'UserNotFoundException' &&
+          err?.name !== 'NotAuthorizedException'
+        ) {
+          console.warn(
+            '[AKASHA] Cognito session check:',
+            err
+          );
+        }
+
+        if (mounted) {
+          setUser(null);
+        }
+      } finally {
+        if (mounted) {
+          setAuthLoading(false);
+        }
+      }
+    };
+
+    initializeAuth();
+
+    const unsubscribe = Hub.listen('auth', ({ payload }) => {
+      const { event } = payload || {};
+      if (
+        event === 'signedIn' ||
+        event === 'signInWithRedirect' ||
+        event === 'customOAuthState'
+      ) {
+        initializeAuth();
+      } else if (event === 'signedOut') {
+        if (mounted) {
+          setUser(null);
+          setAuthLoading(false);
+        }
+      } else if (event === 'signInWithRedirect_failure') {
+        console.error('[AKASHA] OAuth redirect failure:', payload?.data);
+        if (mounted) {
+          setAuthLoading(false);
+        }
+      }
+    });
 
     return () => {
-      isMounted = false;
-      clearTimeout(timeoutId);
-      if (typeof unsubscribe === 'function') unsubscribe();
+      mounted = false;
+      unsubscribe();
     };
   }, []);
 
-  /* Sync Chat Sessions from/to Firestore when user logs in */
+  /* ──────────────────────────────────────────────────────────────
+   * Session storage
+   *
+   * Temporary local implementation.
+   * This will move to FastAPI + DynamoDB.
+   * ────────────────────────────────────────────────────────────── */
   useEffect(() => {
-    if (!user) return;
-
-    if (isDemoMode) {
-      // Demo fallback: local session
-      const defaultSession = {
-        id: 'session-1',
-        title: 'Satellite Imagery Overview',
-        messages: [],
-        updatedAt: Date.now()
-      };
-      setSessions([defaultSession]);
-      setActiveSessionId('session-1');
+    if (!user) {
+      setSessions([]);
+      setActiveSessionId(null);
       return;
     }
 
-    // Real Firestore sync per user: users/{userId}/sessions
-    const sessionsRef = collection(db, 'users', user.id, 'sessions');
-    const q = query(sessionsRef, orderBy('updatedAt', 'desc'));
+    const storageKey =
+      `akasha_sessions_${user.id}`;
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-      if (docs.length > 0) {
-        setSessions(docs);
-        setActiveSessionId(prev => prev && docs.some(s => s.id === prev) ? prev : docs[0].id);
-      } else {
-        // First time user login: create an initial session in Firestore
-        const initId = `session-${Date.now()}`;
-        const initSession = {
-          id: initId,
-          title: 'Satellite Imagery Overview',
-          messages: [],
-          updatedAt: Date.now()
-        };
-        setDoc(doc(db, 'users', user.id, 'sessions', initId), initSession);
-        setSessions([initSession]);
-        setActiveSessionId(initId);
+    try {
+      const saved =
+        localStorage.getItem(storageKey);
+
+      if (saved) {
+        const parsed = JSON.parse(saved);
+
+        if (
+          Array.isArray(parsed) &&
+          parsed.length > 0
+        ) {
+          setSessions(parsed);
+
+          setActiveSessionId(prev =>
+            prev &&
+            parsed.some(
+              session => session.id === prev
+            )
+              ? prev
+              : parsed[0].id
+          );
+
+          return;
+        }
       }
-    }, (err) => {
-      console.warn('Firestore sync warning:', err);
-      // Fallback if rules or collection offline
-      const fallback = {
-        id: 'session-1',
-        title: 'Satellite Imagery Overview',
-        messages: [],
-        updatedAt: Date.now()
-      };
-      setSessions([fallback]);
-      setActiveSessionId('session-1');
-    });
+    } catch (err) {
+      console.warn(
+        '[AKASHA] Failed to restore local sessions:',
+        err
+      );
+    }
 
-    return () => unsubscribe();
-  }, [user]);
-
-  const activeSession = sessions.find(s => s.id === activeSessionId) || sessions[0];
-
-  /* Create new chat session */
-  const handleNewChat = async () => {
-    const newId = `session-${Date.now()}`;
-    const newSession = {
-      id: newId,
-      title: `Analysis Thread #${sessions.length + 1}`,
+    const initialSession = {
+      id: `session-${Date.now()}`,
+      title: 'Satellite Imagery Overview',
       messages: [],
       updatedAt: Date.now()
     };
 
-    if (user && !isDemoMode) {
-      try {
-        await setDoc(doc(db, 'users', user.id, 'sessions', newId), newSession);
-      } catch (err) {
-        console.error('Error saving new session to Firestore:', err);
-      }
-    } else {
-      setSessions(prev => [newSession, ...prev]);
-    }
-    setActiveSessionId(newId);
-  };
+    setSessions([initialSession]);
+    setActiveSessionId(initialSession.id);
 
-  /* Delete single chat session */
-  const handleDeleteSession = async (id) => {
-    const remaining = sessions.filter(s => s.id !== id);
-    if (user && !isDemoMode) {
-      try {
-        await deleteDoc(doc(db, 'users', user.id, 'sessions', id));
-      } catch (err) {
-        console.error('Error deleting session from Firestore:', err);
-      }
-    } else {
-      setSessions(remaining);
-    }
-    if (activeSessionId === id && remaining.length > 0) {
-      setActiveSessionId(remaining[0].id);
-    }
-  };
+    try {
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify([initialSession])
+      );
+    } catch (_) {}
+  }, [user]);
 
-
-  /* Update messages for the active session and persist to Firestore */
-  const handleUpdateSessionMessages = async (newMessages) => {
-    if (!activeSessionId) return;
-
-    let updatedTitle = activeSession?.title || 'New Analysis Thread';
-    if ((!activeSession?.messages || activeSession.messages.length === 0) && newMessages.length > 0) {
-      const firstUserMsg = newMessages.find(m => m.sender === 'user');
-      if (firstUserMsg && firstUserMsg.text) {
-        updatedTitle = firstUserMsg.text.length > 25 
-          ? `${firstUserMsg.text.substring(0, 25)}...` 
-          : firstUserMsg.text;
-      }
+  /* ──────────────────────────────────────────────────────────────
+   * Persist sessions locally
+   * ────────────────────────────────────────────────────────────── */
+  useEffect(() => {
+    if (!user || sessions.length === 0) {
+      return;
     }
 
-    const updatedSession = {
-      id: activeSessionId,
-      title: updatedTitle,
-      messages: newMessages,
+    try {
+      localStorage.setItem(
+        `akasha_sessions_${user.id}`,
+        JSON.stringify(sessions)
+      );
+    } catch (err) {
+      console.warn(
+        '[AKASHA] Failed to persist local sessions:',
+        err
+      );
+    }
+  }, [user, sessions]);
+
+  const activeSession =
+    sessions.find(
+      session => session.id === activeSessionId
+    ) || sessions[0];
+
+  /* ──────────────────────────────────────────────────────────────
+   * Create new chat
+   * ────────────────────────────────────────────────────────────── */
+  const handleNewChat = async () => {
+    const newId =
+      `session-${Date.now()}`;
+
+    const newSession = {
+      id: newId,
+      title:
+        `Analysis Thread #${sessions.length + 1}`,
+      messages: [],
       updatedAt: Date.now()
     };
 
-    // Sanitize object to remove non-serializable fields (like File objects or undefined) before Firestore setDoc
-    const cleanSession = JSON.parse(JSON.stringify(updatedSession));
+    setSessions(prev => [
+      newSession,
+      ...prev
+    ]);
 
-    if (user && !isDemoMode) {
-      try {
-        await setDoc(doc(db, 'users', user.id, 'sessions', activeSessionId), cleanSession, { merge: true });
-      } catch (err) {
-        console.error('Error persisting messages to Firestore:', err);
-      }
-    } else {
-      setSessions(prev => prev.map(s => s.id === activeSessionId ? updatedSession : s));
+    setActiveSessionId(newId);
+  };
+
+  /* ──────────────────────────────────────────────────────────────
+   * Delete chat session
+   * ────────────────────────────────────────────────────────────── */
+  const handleDeleteSession = async id => {
+    const remaining =
+      sessions.filter(
+        session => session.id !== id
+      );
+
+    setSessions(remaining);
+
+    if (activeSessionId === id) {
+      setActiveSessionId(
+        remaining.length > 0
+          ? remaining[0].id
+          : null
+      );
     }
   };
 
-  const handleLogin = (userObj) => {
+  /* ──────────────────────────────────────────────────────────────
+   * Update session messages
+   * ────────────────────────────────────────────────────────────── */
+  const handleUpdateSessionMessages =
+    async newMessages => {
+      if (!activeSessionId) return;
+
+      let updatedTitle =
+        activeSession?.title ||
+        'New Analysis Thread';
+
+      /*
+       * Automatically title a new session using
+       * its first user message.
+       */
+      if (
+        (!activeSession?.messages ||
+          activeSession.messages.length === 0) &&
+        newMessages.length > 0
+      ) {
+        const firstUserMsg =
+          newMessages.find(
+            message =>
+              message.sender === 'user'
+          );
+
+        if (firstUserMsg?.text) {
+          updatedTitle =
+            firstUserMsg.text.length > 25
+              ? `${firstUserMsg.text.substring(
+                  0,
+                  25
+                )}...`
+              : firstUserMsg.text;
+        }
+      }
+
+      const updatedSession = {
+        id: activeSessionId,
+        title: updatedTitle,
+        messages: newMessages,
+        updatedAt: Date.now()
+      };
+
+      setSessions(prev =>
+        prev.map(session =>
+          session.id === activeSessionId
+            ? updatedSession
+            : session
+        )
+      );
+    };
+
+  /* ──────────────────────────────────────────────────────────────
+   * Login
+   * ────────────────────────────────────────────────────────────── */
+  const handleLogin = userObj => {
     setUser(userObj);
   };
 
+  /* ──────────────────────────────────────────────────────────────
+   * Logout
+   * ────────────────────────────────────────────────────────────── */
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      /*
+       * Only real Cognito sessions should call Cognito logout.
+       * Demo sessions are local.
+       */
+      if (
+        user?.provider === 'Google' ||
+        user?.provider === 'Cognito'
+      ) {
+        await cognitoSignOut();
+      }
     } catch (err) {
-      console.error('Logout error:', err);
+      console.error(
+        '[AKASHA] Cognito logout error:',
+        err
+      );
     }
+
     setUser(null);
+    setSessions([]);
+    setActiveSessionId(null);
   };
 
+  /* ──────────────────────────────────────────────────────────────
+   * Loading screen
+   * ────────────────────────────────────────────────────────────── */
   if (authLoading) {
     return (
-      <div style={{
-        position: 'fixed',
-        inset: 0,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'var(--bg-primary)',
-        flexDirection: 'column',
-        gap: '14px'
-      }}>
-        <div className="spinner" style={{ width: 24, height: 24 }} aria-label="Loading" />
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', letterSpacing: '-0.01em' }}>
+      <div
+        style={{
+          position: 'fixed',
+          inset: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'var(--bg-primary)',
+          flexDirection: 'column',
+          gap: '14px'
+        }}
+      >
+        <div
+          className="spinner"
+          style={{
+            width: 24,
+            height: 24
+          }}
+          aria-label="Loading"
+        />
+
+        <p
+          style={{
+            color: 'var(--text-muted)',
+            fontSize: '0.82rem',
+            letterSpacing: '-0.01em'
+          }}
+        >
           Loading session…
         </p>
       </div>
     );
   }
 
+  /* ──────────────────────────────────────────────────────────────
+   * Login screen
+   * ────────────────────────────────────────────────────────────── */
   if (!user) {
-    return <Login onLogin={handleLogin} />;
+    return (
+      <Login onLogin={handleLogin} />
+    );
   }
+  
 
+  /* ──────────────────────────────────────────────────────────────
+   * Main application
+   * ────────────────────────────────────────────────────────────── */
   return (
     <div className="app-container">
       <Sidebar
@@ -335,12 +579,14 @@ function App() {
         theme={theme}
         onToggleTheme={toggleTheme}
       />
-      
+
       <ChatInterface
         selectedFiles={selectedFiles}
         onFileSelect={setSelectedFiles}
         activeSession={activeSession}
-        onUpdateSessionMessages={handleUpdateSessionMessages}
+        onUpdateSessionMessages={
+          handleUpdateSessionMessages
+        }
         user={user}
         draftQuery={currentDraft.query}
         onDraftQueryChange={setDraftQuery}

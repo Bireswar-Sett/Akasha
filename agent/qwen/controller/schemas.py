@@ -507,13 +507,18 @@ class InputManifest(BaseModel):
 
             modality_set = set(modalities)
 
-            if modality_set not in {
+            if modality_set not in (
                 {Modality.OPTICAL, Modality.SAR},
                 {Modality.MULTISPECTRAL, Modality.SAR},
-            }:
+            ):
                 raise ValueError(
                     "cross-modal relationship requires one optical/multispectral "
                     "and one SAR observation"
+                )
+
+            if self.relationship.co_registered is not True:
+                raise ValueError(
+                    "cross-modal relationship requires co_registered=true"
                 )
 
         elif relation == RelationshipType.TEMPORAL:

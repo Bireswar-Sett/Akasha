@@ -363,43 +363,72 @@ This deterministic transformation is implemented separately from the language-mo
 
 ## ☁️ Deployment
 
-### Frontend
+### Frontend — AWS Amplify
 
-The frontend is designed for Firebase Hosting.
+The frontend is deployed on **AWS Amplify** and automatically built on every push to the `main` branch.
+
+For a manual build:
 
 ```bash
 cd frontend
 npm ci
 npm run build
-firebase deploy --only hosting
 ```
 
-### Backend
+The Amplify Console CI/CD pipeline handles the deploy. To trigger manually via the CLI:
 
-The FastAPI service is containerized for deployment to Google Cloud Run.
+```bash
+amplify publish
+```
+
+### Backend — AWS ECS (Fargate)
+
+The FastAPI service is containerised and deployed to **Amazon ECS (Fargate)** in `eu-north-1`.
+
+Build and push the image to ECR:
 
 ```bash
 cd backend
 
-gcloud run deploy akasha-backend \
-  --source . \
-  --region us-central1
+# Build
+docker build -t akasha-backend:latest .
+
+# Tag + push to ECR (replace <account_id> and <region>)
+aws ecr get-login-password --region eu-north-1 \
+  | docker login --username AWS \
+    --password-stdin <account_id>.dkr.ecr.eu-north-1.amazonaws.com
+
+docker tag akasha-backend:latest \
+  <account_id>.dkr.ecr.eu-north-1.amazonaws.com/akasha-backend:latest
+
+docker push \
+  <account_id>.dkr.ecr.eu-north-1.amazonaws.com/akasha-backend:latest
 ```
 
-The Firebase Hosting configuration can route `/api/**` traffic to the Cloud Run service.
+Then update the ECS service to force a new deployment:
+
+```bash
+aws ecs update-service \
+  --cluster akasha-cluster \
+  --service akasha-backend \
+  --force-new-deployment \
+  --region eu-north-1
+```
+
+The ECS task role (`AkashaBackendRole`) grants the container access to S3 and Cognito at runtime — no static AWS credentials are required in the container.
 
 ### Qwen controller
 
-The controller can run as a Gradio Hugging Face Space and exposes:
+The controller runs as a Gradio Hugging Face Space and exposes:
 
 ```text
-/ask_akasha
+/analyze
 ```
 
 The current hosted controller is:
 
 ```text
-AdityaSingh1531/qwen
+Bireswar26/Qwen
 ```
 
 ### Specialist models
@@ -412,17 +441,40 @@ Specialist models are independently hosted and exposed through Gradio APIs. The 
 
 Never commit credentials to the repository.
 
-Typical backend configuration includes:
+### Backend (`backend/.env`)
 
 ```env
-FIREBASE_PROJECT_ID=...
-FIREBASE_STORAGE_BUCKET=...
-QWEN_SPACE=AdityaSingh1531/qwen
+# AWS
+AWS_REGION=eu-north-1
+AWS_S3_BUCKET=akasha-268335032555-eu-north-1-an
+AWS_ROLE_ARN=arn:aws:iam::268335032555:role/AkashaBackendRole
+AWS_SESSION_NAME=akasha-backend
+
+# Cognito (JWT verification)
+COGNITO_REGION=eu-north-1
+COGNITO_USER_POOL_ID=eu-north-1_R71nMtdeZ
+COGNITO_CLIENT_ID=2dj154bemrmeifpl2n6aob10ck
+
+# Qwen
+QWEN_SPACE=Bireswar26/Qwen
 HF_TOKEN=...
-SIGNED_URL_EXPIRATION_SECONDS=300
+SIGNED_URL_EXPIRATION_SECONDS=1800
+
+# Gemini (text conversations)
+GEMINI_API_KEY=...
+GEMINI_MODEL=gemini-2.0-flash
 ```
 
-The exact set of variables is determined by `backend/.env.example` and the deployed infrastructure configuration.
+### Frontend (`frontend/.env`)
+
+```env
+VITE_API_BASE_URL=https://<ecs-service-url>
+VITE_COGNITO_USER_POOL_ID=eu-north-1_R71nMtdeZ
+VITE_COGNITO_CLIENT_ID=2dj154bemrmeifpl2n6aob10ck
+VITE_COGNITO_DOMAIN=eu-north-1r71nmtdez.auth.eu-north-1.amazoncognito.com
+```
+
+The exact set of variables is determined by `backend/.env.example` and `frontend/.env.example`.
 
 For Hugging Face Spaces, store authentication tokens in **Space Secrets**, not in source files.
 

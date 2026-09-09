@@ -1,26 +1,59 @@
 FROM python:3.11-slim
 
-# Set environment variables
+# ──────────────────────────────────────────────────────────────
+# Environment
+# ──────────────────────────────────────────────────────────────
 ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
     DEBIAN_FRONTEND=noninteractive \
     PORT=8080
 
 WORKDIR /app
 
-# Install system dependencies if required
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+# ──────────────────────────────────────────────────────────────
+# System dependencies
+# ──────────────────────────────────────────────────────────────
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install dependencies
+# ──────────────────────────────────────────────────────────────
+# Python dependencies (cached layer — only invalidated when
+# requirements.txt changes)
+# ──────────────────────────────────────────────────────────────
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend application code
+# ──────────────────────────────────────────────────────────────
+# Application code
+# ──────────────────────────────────────────────────────────────
 COPY . .
 
-# Expose port (Cloud Run sets PORT automatically, defaults to 8080)
-EXPOSE 8080
+# ──────────────────────────────────────────────────────────────
+# Non-root user (ECS / production security best practice)
+# ──────────────────────────────────────────────────────────────
+RUN addgroup --system appgroup \
+    && adduser --system --ingroup appgroup --no-create-home appuser \
+    && chown -R appuser:appgroup /app
 
-# Command to launch FastAPI with Uvicorn binding to 0.0.0.0:PORT
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT}
+USER appuser
+
+# ──────────────────────────────────────────────────────────────
+# Health check
+# ECS uses this to determine container readiness.
+# ──────────────────────────────────────────────────────────────
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/api/status || exit 1
+
+# ──────────────────────────────────────────────────────────────
+# Port
+# ECS task definitions set PORT via environment; default is 8080.
+# ──────────────────────────────────────────────────────────────
+EXPOSE ${PORT}
+
+# ──────────────────────────────────────────────────────────────
+# Entrypoint
+# ──────────────────────────────────────────────────────────────
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers 1"]

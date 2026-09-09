@@ -14,22 +14,13 @@ import axios from 'axios';
 
 import logoSrc from '../assets/logo.png';
 
-import {
-  auth,
-  storage,
-  db,
-  isDemoMode
-} from '../firebaseClient';
+import { fetchAuthSession } from 'aws-amplify/auth';
 
-import {
-  ref,
-  uploadBytes
-} from 'firebase/storage';
+const isDemoMode = import.meta.env.VITE_DEMO_MODE === 'true';
 
-import {
-  collection,
-  addDoc
-} from 'firebase/firestore';
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL || ''
+).replace(/\/$/, '');
 
 
 /* ============================================================================
@@ -529,11 +520,15 @@ const buildRelationshipHint = descriptors => {
         .map(item => item.acquisitionTime)
         .filter(Boolean);
 
+    if (timestamps.length !== 2) {
+      throw new Error(
+        'Temporal optical analysis requires an acquisition date in both filenames.'
+      );
+    }
+
     return {
-      type:
-        timestamps.length === 2
-          ? 'bi_temporal'
-          : 'temporal'
+      type: 'temporal',
+      spatially_corresponding: true
     };
   }
 
@@ -544,7 +539,8 @@ const buildRelationshipHint = descriptors => {
     sarObservationIds.length === 1
   ) {
     return {
-      type: 'cross_modal'
+      type: 'cross_modal',
+      co_registered: true
     };
   }
 
@@ -553,8 +549,19 @@ const buildRelationshipHint = descriptors => {
     descriptors.length === 4 &&
     sarObservationIds.length === 2
   ) {
+    if (
+      sar.some(
+        item => !item.acquisitionTime
+      )
+    ) {
+      throw new Error(
+        'Temporal SAR analysis requires an acquisition date in every filename.'
+      );
+    }
+
     return {
-      type: 'bi_temporal'
+      type: 'temporal',
+      spatially_corresponding: true
     };
   }
 
@@ -876,6 +883,38 @@ const ChatInterface = ({
     const uploadedImageMetadata = [];
 
     try {
+      /*
+       * Real users:
+       *
+       *   Cognito access token
+       *        ↓
+       *   FastAPI /storage/upload-url
+       *        ↓
+       *   short-lived S3 presigned PUT URL
+       *        ↓
+       *   browser uploads directly to S3
+       *
+       * Demo mode intentionally keeps imagery local. Demo users do not have a
+       * Cognito identity and therefore must not be given a fake backend token.
+       */
+      let accessToken = null;
+
+      if (!isDemoMode) {
+        const session = await fetchAuthSession();
+
+        accessToken =
+          session.tokens?.accessToken?.toString() ||
+          null;
+
+        if (!accessToken) {
+          const authError = new Error(
+            'Authentication required before imagery can be uploaded.'
+          );
+          authError.isAuthError = true;
+          throw authError;
+        }
+      }
+
       for (
         let index = 0;
         index < descriptors.length;
@@ -896,178 +935,22 @@ const ChatInterface = ({
 
         let localPreviewUrl = '';
 
-        let storagePath = '';
-
-        if (
-          user &&
-          !isDemoMode
-        ) {
-          const uid =
-            user.uid ||
-            user.id ||
-            user.firebaseUser?.uid;
-
-          if (!uid) {
-            throw new Error(
-              'Logged-in user does not have a valid Firebase UID.'
-            );
-          }
-
-          const timestamp =
-            Date.now();
-
-          storagePath =
-            `users/${uid}/imagery/` +
-            `${timestamp}_${file.name}`;
-
-          const storageRef =
-            ref(
-              storage,
-              storagePath
-            );
-
-
-          /*
-           * Firebase custom metadata.
-           *
-           * These are intended to let the backend reconstruct the logical
-           * observations from the physical files.
-           *
-           * The backend MUST still validate these values and should never
-           * trust arbitrary request-body metadata over Storage metadata.
-           */
-          const customMetadata = {
-            original_filename:
-              filename,
-
-            file_format:
-              extension
-                .replace('.', '')
-                .toLowerCase(),
-
-            modality,
-
-            acquisition_time:
-              acquisitionTime || '',
-
-            observation_id:
-              observationId,
-
-            polarization:
-              polarization || '',
-
-            imagery_role:
-              modality === 'sar'
-                ? 'source_sar_channel'
-                : 'source_image',
-
-            uploaded_by:
-              'akasha_frontend',
-
-            metadata_version:
-              '3'
-          };
-
-
-          await uploadBytes(
-            storageRef,
-            file,
-            {
-              customMetadata
-            }
-          );
-
-
-          /*
-           * Firestore metadata is useful for displaying the user's imagery
-           * library, but is NOT the security authority for analysis.
-           */
-          await addDoc(
-            collection(
-              db,
-              'users',
-              uid,
-              'imagery'
-            ),
-            {
-              name: filename,
-
-              path: storagePath,
-
-              uploadedAt:
-                Date.now(),
-
-              size: file.size,
-
-              modality,
-
-              polarization:
-                polarization || null,
-
-              acquisitionTime:
-                acquisitionTime || null,
-
-              observationId,
-
-              format:
-                extension
-                  .replace('.', '')
-                  .toLowerCase(),
-
-              metadataVersion:
-                '3'
-            }
-          );
-
-
-          uploadedImagePaths.push(
-            storagePath
-          );
-
-
-          uploadedImageMetadata.push({
-            path: storagePath,
-
-            filename,
-
-            format:
-              extension
-                .replace('.', '')
-                .toLowerCase(),
-
-            modality,
-
-            polarization:
-              polarization || null,
-
-            acquisition_time:
-              acquisitionTime || null,
-
-            observation_id:
-              observationId,
-
-            physical_index:
-              index
-          });
-
-
+        /*
+         * --------------------------------------------------------------------
+         * DEMO / LOCAL MODE
+         * --------------------------------------------------------------------
+         *
+         * Keep local previews only. No S3 or backend upload is attempted.
+         */
+        if (isDemoMode) {
           localPreviewUrl =
-            URL.createObjectURL(
-              file
-            );
-
-        } else {
-          /*
-           * Demo/local mode.
-           */
-          localPreviewUrl =
-            URL.createObjectURL(
-              file
-            );
+            URL.createObjectURL(file);
 
           uploadedImageMetadata.push({
             path: null,
 
+            image_id: null,
+
             filename,
 
             format:
@@ -1089,8 +972,112 @@ const ChatInterface = ({
             physical_index:
               index
           });
-        }
+        } else {
+          /*
+           * ------------------------------------------------------------------
+           * REAL COGNITO + S3 MODE
+           * ------------------------------------------------------------------
+           */
 
+          const contentType =
+            file.type ||
+            'application/octet-stream';
+
+          const uploadResponse =
+            await axios.post(
+              `${API_BASE_URL}/api/storage/upload-url`,
+              {
+                filename,
+                content_type: contentType,
+                size: file.size
+              },
+              {
+                timeout: 30000,
+                headers: {
+                  Authorization:
+                    `Bearer ${accessToken}`,
+                  'Content-Type':
+                    'application/json'
+                }
+              }
+            );
+
+          const {
+            upload_url: uploadUrl,
+            object_key: objectKey,
+            image_id: imageId
+          } = uploadResponse.data || {};
+
+          if (
+            !uploadUrl ||
+            !objectKey ||
+            !imageId
+          ) {
+            throw new Error(
+              'Backend returned an invalid S3 upload response.'
+            );
+          }
+
+          /*
+           * The presigned URL binds the upload to the content type used when
+           * it was generated, so keep this header identical to the value sent
+           * to /storage/upload-url.
+           */
+          await axios.put(
+            uploadUrl,
+            file,
+            {
+              timeout: 180000,
+              headers: {
+                'Content-Type':
+                  contentType
+              }
+            }
+          );
+
+          localPreviewUrl =
+            URL.createObjectURL(file);
+
+          uploadedImagePaths.push(
+            objectKey
+          );
+
+          uploadedImageMetadata.push({
+            path: objectKey,
+
+            image_id: imageId,
+
+            filename,
+
+            format:
+              extension
+                .replace('.', '')
+                .toLowerCase(),
+
+            modality,
+
+            polarization:
+              polarization || null,
+
+            acquisition_time:
+              acquisitionTime || null,
+
+            observation_id:
+              observationId,
+
+            physical_index:
+              index,
+
+            size:
+              file.size,
+
+            content_type:
+              contentType,
+
+            metadata_version:
+              '3'
+          });
+        }
 
         attachmentUrls.push({
           name: filename,
@@ -1108,19 +1095,24 @@ const ChatInterface = ({
           observationId
         });
       }
-
     } catch (uploadErr) {
       console.error(
-        'Storage upload error:',
+        'S3 upload error:',
         uploadErr
       );
 
+      const status =
+        uploadErr?.response?.status;
+
+      const detail =
+        uploadErr?.response?.data?.detail ||
+        '';
+
       const uploadErrorMessage =
-        uploadErr?.message?.includes(
-          'permission'
-        )
-          ? 'Storage permission denied. Please check your Firebase Storage rules.'
+        uploadErr?.isAuthError
+          ? uploadErr.message
           : (
+            detail ||
             uploadErr?.message ||
             'Image upload failed. Please try again.'
           );
@@ -1155,7 +1147,9 @@ const ChatInterface = ({
           isError: true,
 
           text:
-            uploadErrorMessage,
+            status
+              ? `Image upload failed (${status}): ${uploadErrorMessage}`
+              : uploadErrorMessage,
 
           timestamp:
             new Date().toLocaleTimeString(
@@ -1172,6 +1166,7 @@ const ChatInterface = ({
 
       return;
     }
+
 
 
     const userMessageWithAttachments = {
@@ -1211,22 +1206,22 @@ const ChatInterface = ({
         throw authError;
       }
 
-      const currentFirebaseUser =
-        auth?.currentUser;
+      let accessToken = null;
 
-      const idToken =
-        currentFirebaseUser
-          ? await currentFirebaseUser.getIdToken()
-          : isDemoMode
-            ? 'demo-local-token'
-            : null;
+      if (!isDemoMode) {
+        const session = await fetchAuthSession();
 
-      if (!idToken) {
-        const authError = new Error(
-          'Authentication required before analysis can run.'
-        );
-        authError.isAuthError = true;
-        throw authError;
+        accessToken =
+          session.tokens?.accessToken?.toString() ||
+          null;
+
+        if (!accessToken) {
+          const authError = new Error(
+            'Authentication required before analysis can run.'
+          );
+          authError.isAuthError = true;
+          throw authError;
+        }
       }
 
 
@@ -1278,7 +1273,7 @@ const ChatInterface = ({
 
       const response =
         await axios.post(
-          '/api/analyze',
+          `${API_BASE_URL}/api/analyze`,
           requestBody,
           {
             // Qwen orchestration can legitimately exceed a short browser
@@ -1286,8 +1281,12 @@ const ChatInterface = ({
             timeout: 180000,
 
             headers: {
-              Authorization:
-                `Bearer ${idToken}`
+              ...(accessToken
+                ? {
+                    Authorization:
+                      `Bearer ${accessToken}`
+                  }
+                : {})
             }
           }
         );

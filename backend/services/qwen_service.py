@@ -168,42 +168,48 @@ class QwenService:
 
     def analyze(
         self,
-        user_message: str,
-        image_url: str,
+        user_message: str = "",
+        image_url: str = "",
         max_new_tokens: int = 256,
         *,
+        user_request: str | None = None,
+        signed_urls: list[str] | None = None,
         image_urls: list[str] | None = None,
         image_metadata: list[dict[str, Any]] | None = None,
         relationship: dict[str, Any] | None = None,
         manifest: dict[str, Any] | None = None,
+        input_manifest: dict[str, Any] | None = None,
     ) -> str:
-        urls = list(image_urls or [image_url])
+        prompt = user_request or user_message
+        urls = list(signed_urls or image_urls or ([image_url] if image_url else []))
+        manifest_data = input_manifest or manifest
+
         request = QwenRequestBuilder.build(
-            user_request=user_message,
+            user_request=prompt,
             image_urls=urls,
             image_metadata=image_metadata,
             relationship=relationship,
-            manifest=manifest,
+            manifest=manifest_data,
         )
         client = self._get_client()
         logger.info("Calling Qwen Space endpoint %s for %d image input(s)", self.api_name, len(urls))
 
         try:
-            arguments: dict[str, Any] = {
-                "user_request": request.user_request,
-                "url_1": request.images[0].signed_url,
-                "url_2": request.images[1].signed_url if len(request.images) > 1 else "",
-                "url_3": request.images[2].signed_url if len(request.images) > 2 else "",
-                "url_4": request.images[3].signed_url if len(request.images) > 3 else "",
-                # The Space now exposes the normalized-manifest and direct
-                # upload inputs as part of its public Gradio contract.
-                "manifest_json": json.dumps(request.metadata, ensure_ascii=False),
-                "physical_files": [],
-                "api_name": self.api_name,
-            }
-            result = client.predict(**arguments)
+            result = client.predict(
+                request.user_request,
+                request.images[0].signed_url,
+                request.images[1].signed_url if len(request.images) > 1 else "",
+                request.images[2].signed_url if len(request.images) > 2 else "",
+                request.images[3].signed_url if len(request.images) > 3 else "",
+                json.dumps(
+                    request.metadata,
+                    ensure_ascii=False,
+                ),
+                None,
+                api_name=self.api_name,
+            )
             if result is None or not str(result).strip():
-                raise RuntimeError("empty response")
+                raise RuntimeError("empty response from Qwen Space")
             logger.info("Qwen request completed successfully")
             return self._response_text(result)
         except HTTPException:
@@ -213,8 +219,6 @@ class QwenService:
             return self._local_fallback(request, max_new_tokens, status_code=status.HTTP_504_GATEWAY_TIMEOUT, cause=exc)
         except Exception as exc:
             message = str(exc)
-            # Keep signed URLs and response bodies out of logs, but retain the
-            # exception class/message needed to diagnose endpoint mismatches.
             logger.error("Qwen Gradio inference failed: %s: %s", type(exc).__name__, str(exc)[:300])
             if "ZeroGPU runs limit" in message or "ZeroGPU" in message:
                 return self._local_fallback(request, max_new_tokens, status_code=status.HTTP_429_TOO_MANY_REQUESTS, cause=exc)
@@ -227,8 +231,14 @@ class QwenService:
             payload = json.loads(text)
         except (TypeError, json.JSONDecodeError):
             return text
-        if isinstance(payload, dict) and isinstance(payload.get("answer"), str):
-            return payload["answer"].strip()
+        if isinstance(payload, dict):
+            for key in ("answer", "response", "result", "output", "summary"):
+                val = payload.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+            # If there's an error message inside the payload
+            if isinstance(payload.get("error"), str) and payload["error"].strip():
+                return f"Analysis notice: {payload['error'].strip()}"
         return text
 
     @staticmethod

@@ -16,8 +16,8 @@ import {
 } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import logoSrc from '../assets/logo.png';
-import { db, isDemoMode } from '../firebaseClient';
-import { collection, query, orderBy, onSnapshot } from 'firebase/firestore';
+
+const isDemoMode = import.meta.env.VITE_DEMO_MODE === 'true';
 
 const Sidebar = ({
   sessions,
@@ -55,46 +55,15 @@ const Sidebar = ({
     }
 
     return () =>
-      document.removeEventListener(
-        'mousedown',
-        handleOutsideClick
-      );
+      document.removeEventListener('mousedown', handleOutsideClick);
   }, [isSettingsOpen]);
 
-  useEffect(() => {
-    if (!user || isDemoMode) return;
-
-    const imageryRef = collection(
-      db,
-      'users',
-      user.id,
-      'imagery'
-    );
-
-    const q = query(
-      imageryRef,
-      orderBy('uploadedAt', 'desc')
-    );
-
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const items = snapshot.docs.map((d) => ({
-          id: d.id,
-          ...d.data()
-        }));
-
-        setUserImagery(items);
-      },
-      (err) =>
-        console.warn(
-          'Firestore imagery list warning:',
-          err
-        )
-    );
-
-    return () => unsubscribe();
-  }, [user]);
+  /*
+   * Imagery library — currently uses local state only.
+   * Files uploaded in the current session are tracked via selectedFiles.
+   * A future iteration will fetch the user's full imagery list from
+   * the backend (GET /api/storage/list or similar).
+   */
 
   // Reject files that are derived/generated artifacts rather
   // than original satellite imagery.
@@ -800,8 +769,11 @@ const Sidebar = ({
                   {user.avatar ? (
                     <img
                       src={user.avatar}
-                      alt={user.name}
+                      alt={user.email || user.name || 'User avatar'}
                       className="sidebar-user-avatar"
+                      onError={e => {
+                        e.currentTarget.style.display = 'none';
+                      }}
                     />
                   ) : (
                     <div
@@ -809,21 +781,28 @@ const Sidebar = ({
                       aria-hidden="true"
                     >
                       {(
-                        user.name ||
                         user.email ||
+                        (user.name && !user.name.startsWith('google_') ? user.name : '') ||
                         'U'
                       )[0].toUpperCase()}
                     </div>
                   )}
 
                   <div className="sidebar-user-info">
-                    <div className="sidebar-user-name">
-                      {user.name || 'User'}
+                    <div
+                      className="sidebar-user-name"
+                      title={user.email || user.name || 'User'}
+                    >
+                      {user.email || (user.name && !user.name.startsWith('google_') ? user.name : 'User')}
                     </div>
 
-                    <div className="sidebar-user-sub">
-                      {user.email ||
-                        user.provider}
+                    <div
+                      className="sidebar-user-sub"
+                      title={user.name && user.name !== user.email && !user.name.startsWith('google_') ? user.name : (user.provider ? `${user.provider} Account` : 'Active Session')}
+                    >
+                      {user.name && user.name !== user.email && !user.name.startsWith('google_')
+                        ? user.name
+                        : (user.provider ? `${user.provider.charAt(0).toUpperCase() + user.provider.slice(1)} Account` : 'Active Session')}
                     </div>
                   </div>
                 </div>
@@ -1006,14 +985,17 @@ const Sidebar = ({
               {user?.avatar ? (
                 <img
                   src={user.avatar}
-                  alt={user.name}
+                  alt={user.email || user.name || 'User'}
                   className="profile-avatar-large"
+                  onError={e => {
+                    e.currentTarget.style.display = 'none';
+                  }}
                 />
               ) : (
                 <div className="profile-avatar-fallback-large">
                   {(
-                    user?.name ||
                     user?.email ||
+                    (user?.name && !user.name.startsWith('google_') ? user.name : '') ||
                     'U'
                   )[0].toUpperCase()}
                 </div>
@@ -1029,21 +1011,29 @@ const Sidebar = ({
                     fontSize: '1.05rem',
                     fontWeight: 700,
                     color:
-                      'var(--text-primary)'
+                      'var(--text-primary)',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis'
                   }}
+                  title={user?.email || user?.name || 'Operator'}
                 >
-                  {user?.name || 'Operator'}
+                  {user?.email || (user?.name && !user.name.startsWith('google_') ? user.name : 'Operator')}
                 </div>
 
                 <div
                   style={{
                     fontSize: '0.8rem',
                     color:
-                      'var(--text-secondary)'
+                      'var(--text-secondary)',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis'
                   }}
                 >
-                  {user?.email ||
-                    'No email provided'}
+                  {user?.name && user.name !== user.email && !user.name.startsWith('google_')
+                    ? user.name
+                    : (user?.provider ? `${user.provider.charAt(0).toUpperCase() + user.provider.slice(1)} Account` : 'Active Session')}
                 </div>
 
                 <div

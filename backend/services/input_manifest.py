@@ -1,12 +1,12 @@
 """
 Trusted backend construction of Qwen-compatible input manifests.
 
-This module converts physical Firebase Storage files into logical
+This module converts physical S3 object metadata into logical
 remote-sensing observations.
 
 Important:
 - Modality, polarization, timestamps, and observation IDs come from
-  trusted Firebase Storage metadata.
+  trusted S3-verified file metadata supplied by the route layer.
 - This module NEVER infers modality/polarization from filenames.
 - A SAR observation consists of exactly one VV file + one VH file.
 - The application supports at most four physical files.

@@ -1,0 +1,56 @@
+# ============================================================
+# AKASHA — Local Development Compose
+# ============================================================
+# Prerequisites:
+#   1. Copy backend/.env.example → backend/.env and fill in values.
+#   2. Configure AWS credentials via ~/.aws/credentials or env vars.
+#
+# Usage:
+#   docker compose up --build        # start backend
+#   docker compose up --build -d     # detached mode
+#
+# The frontend runs separately via: cd frontend && npm run dev
+# ============================================================
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: akasha-backend:local
+    container_name: akasha-backend
+    ports:
+      - "8000:8080"
+    environment:
+      PORT: "8080"
+      # AWS credentials for local dev (uses host AWS config by default)
+      AWS_REGION: ${AWS_REGION:-eu-north-1}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-akasha-268335032555-eu-north-1-an}
+      AWS_ROLE_ARN: ${AWS_ROLE_ARN:-}
+      AWS_SESSION_NAME: ${AWS_SESSION_NAME:-akasha-backend-local}
+      # Cognito
+      COGNITO_REGION: ${COGNITO_REGION:-eu-north-1}
+      COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID:-}
+      COGNITO_CLIENT_ID: ${COGNITO_CLIENT_ID:-}
+      # Qwen / HF
+      QWEN_SPACE: ${QWEN_SPACE:-Bireswar26/Qwen}
+      QWEN_API_NAME: ${QWEN_API_NAME:-/analyze}
+      HF_TOKEN: ${HF_TOKEN:-}
+      SIGNED_URL_EXPIRATION_SECONDS: ${SIGNED_URL_EXPIRATION_SECONDS:-1800}
+      # Gemini
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      # Firebase (optional legacy)
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-akasha-v1}
+      FIREBASE_STORAGE_BUCKET: ${FIREBASE_STORAGE_BUCKET:-}
+      FIREBASE_SERVICE_ACCOUNT_KEY_PATH: ${FIREBASE_SERVICE_ACCOUNT_KEY_PATH:-}
+    volumes:
+      # Mount host AWS credentials so local boto3 calls work without ECS role
+      - "${HOME}/.aws:/home/appuser/.aws:ro"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
